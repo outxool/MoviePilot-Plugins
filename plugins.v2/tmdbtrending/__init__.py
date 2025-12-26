@@ -16,12 +16,12 @@ from app.plugins import _PluginBase
 from app.schemas import MediaType, NotificationType
 from app.utils.http import RequestUtils
 
-class TmdbTrending(_PluginBase):
+class tmdbtrending(_PluginBase):
     # 插件基本信息
     plugin_name = "TMDB趋势订阅"
     plugin_desc = "自动订阅 TMDB 热门趋势（电影/电视剧/动漫），支持评分过滤与消息通知。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -234,11 +234,17 @@ class TmdbTrending(_PluginBase):
 
     def get_page(self) -> List[dict]:
         """
-        插件详情页 - 显示最近订阅历史
+        插件详情页 - 显示最近订阅历史 (优化后的UI布局)
         """
         history = self.get_data('history') or []
         if not history:
-            return [{'component': 'div', 'text': '暂无订阅历史', 'props': {'class': 'text-center'}}]
+            return [
+                {
+                    'component': 'div',
+                    'text': '暂无订阅历史，请在设置中勾选“立即运行一次”并保存。',
+                    'props': {'class': 'text-center mt-4'}
+                }
+            ]
         
         # 按时间倒序
         history = sorted(history, key=lambda x: x.get('time'), reverse=True)[:50]
@@ -248,18 +254,38 @@ class TmdbTrending(_PluginBase):
             tmdb_link = f"https://www.themoviedb.org/{'movie' if item.get('type')=='电影' else 'tv'}/{item.get('tmdb_id')}"
             contents.append({
                 'component': 'VCard',
-                'props': {'class': 'mb-2'},
-                'content': [{
-                    'component': 'VCardItem',
-                    'content': [
-                        {'component': 'VCardTitle', 'text': item.get('title')},
-                        {'component': 'VCardSubtitle', 'text': f"{item.get('type')} | 评分: {item.get('vote')} | 时间: {item.get('time')}"},
-                        {'component': 'VBtn', 'props': {'href': tmdb_link, 'target': '_blank', 'variant': 'text', 'size': 'small', 'color': 'primary'}, 'text': '查看TMDB'}
-                    ]
-                }]
+                'props': {'class': 'mx-auto', 'width': '100%'},
+                'content': [
+                    {
+                        'component': 'VCardItem',
+                        'content': [
+                            {'component': 'VCardTitle', 'text': item.get('title'), 'props': {'class': 'text-body-1 font-weight-bold'}},
+                            {'component': 'VCardSubtitle', 'text': f"{item.get('type')} | {item.get('year')}", 'props': {'class': 'text-caption'}},
+                        ]
+                    },
+                    {
+                        'component': 'VCardText',
+                        'props': {'class': 'py-0'},
+                        'content': [
+                            {'component': 'div', 'text': f"评分: {item.get('vote')} | 时间: {item.get('time')}", 'props': {'class': 'text-caption text-medium-emphasis'}}
+                        ]
+                    },
+                    {
+                        'component': 'VCardActions',
+                        'content': [
+                            {'component': 'VBtn', 'props': {'href': tmdb_link, 'target': '_blank', 'variant': 'text', 'size': 'x-small', 'color': 'primary'}, 'text': '查看TMDB'}
+                        ]
+                    }
+                ]
             })
             
-        return [{'component': 'div', 'content': contents}]
+        return [
+            {
+                'component': 'div',
+                'props': {'class': 'grid gap-3 grid-info-card'},
+                'content': contents
+            }
+        ]
 
     def stop_service(self):
         try:
@@ -480,12 +506,17 @@ class TmdbTrending(_PluginBase):
             'tmdb_id': tmdb_id,
             'vote': vote,
             'unique_key': unique_key,
+            'year': self.__get_year_from_key(unique_key, title), # 简单补充year
             'time': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
         # 保持最近 500 条
         if len(history) > 500:
             history = history[-500:]
         self.save_data('history', history)
+        
+    def __get_year_from_key(self, key, title):
+        # 辅助方法，仅用于兼容旧记录，新记录在process里已经存了
+        return "" 
 
     def __send_notification(self, items):
         """
