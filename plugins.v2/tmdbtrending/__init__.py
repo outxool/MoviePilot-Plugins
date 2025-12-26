@@ -2,6 +2,7 @@
 print("加载 TmdbTrending 插件模块...")
 
 import datetime
+from threading import Thread
 from typing import Tuple, List, Dict, Any
 
 from apscheduler.triggers.cron import CronTrigger
@@ -14,7 +15,7 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.utils.http import RequestUtils
 
-# 兼容性导入：尝试从不同路径导入类型，防止因版本差异导致加载失败
+# 兼容性导入
 try:
     from app.schemas import MediaType, NotificationType
 except ImportError:
@@ -25,7 +26,7 @@ class TmdbTrending(_PluginBase):
     plugin_name = "TMDB趋势订阅"
     plugin_desc = "自动订阅 TMDB 热门趋势（电影/电视剧/动漫），支持评分过滤与消息通知。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.0.6"
+    plugin_version = "1.0.7"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -37,8 +38,9 @@ class TmdbTrending(_PluginBase):
     # 配置属性
     _enabled = False
     _cron = "0 10 * * *"
-    _onlyonce = False
     _notify = True
+    _onlyonce = False
+    _clear_history = False
     _tmdb_api_key = ""
     
     # 电影配置
@@ -61,7 +63,7 @@ class TmdbTrending(_PluginBase):
 
     def init_plugin(self, config: dict = None):
         """
-        插件初始化，仅用于读取配置
+        插件初始化
         """
         logger.info("正在初始化 TMDB 趋势订阅插件...")
         self.subscribechain = SubscribeChain()
@@ -69,8 +71,9 @@ class TmdbTrending(_PluginBase):
         if config:
             self._enabled = config.get("enabled", False)
             self._cron = config.get("cron", "0 10 * * *")
-            self._onlyonce = config.get("onlyonce", False)
             self._notify = config.get("notify", True)
+            self._onlyonce = config.get("onlyonce", False)
+            self._clear_history = config.get("clear_history", False)
             self._tmdb_api_key = config.get("tmdb_api_key", "")
             
             self._movie_enabled = config.get("movie_enabled", False)
@@ -88,25 +91,45 @@ class TmdbTrending(_PluginBase):
             self._anime_min_vote = float(config.get("anime_min_vote", 7.0))
             self._anime_count = int(config.get("anime_count", 10))
 
+        # 执行一次性操作
+        self.__execute_once_operations()
+
+    def __execute_once_operations(self):
+        """
+        执行清理历史或立即运行的操作，并重置开关
+        """
+        config_updated = False
+        update_dict = {}
+
+        # 1. 清除历史记录
+        if self._clear_history:
+            logger.info("TMDB趋势订阅：正在清除历史记录...")
+            self.save_data('history', [])
+            self._clear_history = False
+            update_dict["clear_history"] = False
+            config_updated = True
+            logger.info("TMDB趋势订阅：历史记录已清除。")
+
+        # 2. 立即运行一次 (使用线程防止阻塞保存)
         if self._onlyonce:
-            logger.info("TMDB趋势订阅：检测到“立即运行一次”选项，请保存后在[设定-服务]中找到本插件服务并点击运行，或等待定时任务触发。")
+            logger.info("TMDB趋势订阅：检测到“立即运行”指令，正在后台启动任务...")
+            Thread(target=self.sync_tmdb_trends).start()
             self._onlyonce = False
-            self.update_config({"onlyonce": False})
+            update_dict["onlyonce"] = False
+            config_updated = True
+        
+        # 3. 如果有变更，回写配置
+        if config_updated:
+            self.update_config(update_dict)
 
     def get_state(self) -> bool:
         return self._enabled
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
-        """
-        必须实现此方法，否则类无法实例化
-        """
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """
-        必须实现此方法，否则类无法实例化
-        """
         return []
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -136,6 +159,17 @@ class TmdbTrending(_PluginBase):
                             ]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [
                                 {'component': 'VSwitch', 'props': {'model': 'notify', 'label': '发送通知'}}
+                            ]}
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [
+                                {'component': 'VSwitch', 'props': {'model': 'onlyonce', 'label': '立即运行一次'}}
+                            ]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [
+                                {'component': 'VSwitch', 'props': {'model': 'clear_history', 'label': '清除历史记录'}}
                             ]}
                         ]
                     },
@@ -188,6 +222,7 @@ class TmdbTrending(_PluginBase):
         ], {
             "enabled": False,
             "onlyonce": False,
+            "clear_history": False,
             "notify": True,
             "cron": "0 10 * * *",
             "tmdb_api_key": "",
@@ -239,7 +274,7 @@ class TmdbTrending(_PluginBase):
         return [{'component': 'div', 'props': {'class': 'grid gap-3 grid-info-card'}, 'content': contents}]
 
     def stop_service(self):
-        """退出插件时无需手动销毁，系统会自动管理 get_service 注册的服务"""
+        """退出插件"""
         pass
 
     def sync_tmdb_trends(self):
