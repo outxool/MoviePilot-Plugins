@@ -1,15 +1,15 @@
 {
-    "tmdbtrendssubscribe": {
-        "name": "TMDB趋势订阅",
-        "release": false,
-        "description": "自动订阅TMDB热门/趋势的电影、电视剧、动画等内容",
-        "labels": "订阅,TMDB,电影,电视剧,动画",
-        "version": "1.0.0",
-        "icon": "https://www.themoviedb.org/assets/2/favicon-32x32-543a21832c8931d3494a68881f6afcafc58e96c5d324345377f3197a37b367b5.png",
-        "author": "PluginCreator",
-        "level": 1,
-        "history": {
-            "v1.0.0": "初始版本，支持TMDB趋势自动订阅"
-        }
+  "TmdbTrending": {
+    "name": "TMDB趋势订阅",
+    "release": true,
+    "description": "自动订阅 TMDB 热门趋势（电影/电视剧/动漫），支持评分过滤与消息通知。",
+    "labels": "订阅,TMDB,榜单",
+    "version": "1.0",
+    "icon": "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg",
+    "author": "MoviePilot-Plugins",
+    "level": 1,
+    "history": {
+      "v1.0": "初始版本：支持电影、电视剧、动漫（日漫筛选）分类订阅，支持评分过滤和自定义周期。"
     }
+  }
 }
