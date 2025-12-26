@@ -4,12 +4,14 @@
     "release": false,
     "description": "自动订阅 TMDB 热门趋势（电影/电视剧/动漫），支持评分过滤与消息通知。",
     "labels": "订阅,TMDB,榜单",
-    "version": "1.0.0",
+    "version": "1.0.6",
     "icon": "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg",
     "author": "MoviePilot-Plugins",
     "level": 1,
     "history": {
-      "v1.0.0": "初始版本：支持电影、电视剧、动漫（日漫筛选）分类订阅，支持评分过滤和自定义周期。"
+      "v1.0.6": "修复：严格遵循小写文件夹+大写类名规范，补全抽象方法防止实例化失败。",
+      "v1.0.5": "修复：修正文件夹命名规范（必须与类名一致），修正引用路径。",
+      "v1.0.4": "重构：使用 get_service 托管任务。"
     }
   }
 }
