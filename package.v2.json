@@ -1,0 +1,12 @@
+{
+  "name": "tmdbtrendssubscribe",
+  "version": "1.0.0",
+  "title": "TMDB趋势自动订阅",
+  "description": "自动订阅TMDB趋势电影/电视剧/动画，支持自定义评分、订阅时间、分类及条数，订阅后发送通知",
+  "author": "outxool",
+  "homepage": "https://github.com/yourusername/tmdbtrendssubscribe",
+  "tags": ["TMDB", "订阅", "趋势", "自动"],
+  "icon": "plugins.v2/tmdbtrendssubscribe/assets/tmdb.png",  # 适配plugins.v2路径
+  "isV2": true,
+  "requirements": []
+}
