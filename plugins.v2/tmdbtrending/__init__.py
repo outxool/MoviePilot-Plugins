@@ -1,5 +1,5 @@
 # 强制打印日志
-print("加载 TmdbTrending 插件模块 (v1.2.2)...")
+print("加载 TmdbTrending 插件模块 (v1.2.3)...")
 
 import datetime
 from threading import Thread
@@ -27,7 +27,7 @@ class TmdbTrending(_PluginBase):
     plugin_name = "TMDB趋势订阅"
     plugin_desc = "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持多榜单并发、年份过滤与去重。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.2.2"
+    plugin_version = "1.2.3"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -106,21 +106,49 @@ class TmdbTrending(_PluginBase):
 
         self.__execute_once_operations()
 
+    def __update_config(self):
+        """
+        全量保存配置
+        """
+        self.update_config({
+            "enabled": self._enabled,
+            "cron": self._cron,
+            "notify": self._notify,
+            "onlyonce": self._onlyonce,
+            "clear_history": self._clear_history,
+            "tmdb_api_key": self._tmdb_api_key,
+            
+            "movie_enabled": self._movie_enabled,
+            "movie_sources": self._movie_sources,
+            "movie_genres": self._movie_genres,
+            "movie_min_vote": self._movie_min_vote,
+            "movie_min_year": self._movie_min_year,
+            "movie_count": self._movie_count,
+            
+            "tv_enabled": self._tv_enabled,
+            "tv_sources": self._tv_sources,
+            "tv_genres": self._tv_genres,
+            "tv_min_vote": self._tv_min_vote,
+            "tv_min_year": self._tv_min_year,
+            "tv_count": self._tv_count,
+            
+            "anime_enabled": self._anime_enabled,
+            "anime_window": self._anime_window,
+            "anime_min_vote": self._anime_min_vote,
+            "anime_min_year": self._anime_min_year,
+            "anime_count": self._anime_count,
+        })
+
     def __execute_once_operations(self):
         """
         执行一次性操作，并正确更新配置
         """
         config_updated = False
-        # 修复 Bug 1：更新配置时必须带上 enabled 状态，防止插件自动关闭
-        update_dict = {
-            "enabled": self._enabled
-        }
 
         if self._clear_history:
             logger.info("TMDB趋势订阅：正在清除历史记录...")
             self.save_data('history', [])
             self._clear_history = False
-            update_dict["clear_history"] = False
             config_updated = True
             logger.info("TMDB趋势订阅：历史记录已清除。")
 
@@ -128,11 +156,11 @@ class TmdbTrending(_PluginBase):
             logger.info("TMDB趋势订阅：检测到“立即运行”指令，正在后台启动任务...")
             Thread(target=self.sync_tmdb_trends).start()
             self._onlyonce = False
-            update_dict["onlyonce"] = False
             config_updated = True
         
+        # 修复Bug：使用全量保存，防止配置丢失
         if config_updated:
-            self.update_config(update_dict)
+            self.__update_config()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -455,7 +483,7 @@ class TmdbTrending(_PluginBase):
 
     def __fetch_and_process(self, media_type: MediaType, source: str, genre_id: str, min_vote: float, min_year: int, limit: int, category_label: str, is_anime_logic: bool = False) -> List[dict]:
         """
-        通用获取和处理逻辑 - 修复 Bug 2: 仅扫描前 N 个条目，而不是无限查找
+        通用获取和处理逻辑 - 仅扫描前 N 个条目
         """
         api_key = self._tmdb_api_key or settings.TMDB_API_KEY
         if not api_key:
@@ -490,10 +518,8 @@ class TmdbTrending(_PluginBase):
 
         results = []
         page = 1
-        total_scanned = 0 # 记录扫描的总条目数
+        total_scanned = 0
 
-        # 逻辑修改：不再以 results < limit 为循环条件，而是以 total_scanned < limit
-        # 这确保了只检查榜单的 Top N，而不是一直翻页直到填满 N 个订阅
         while total_scanned < limit and page <= 5:
             try:
                 req_url = f"{url}&page={page}"
@@ -505,10 +531,9 @@ class TmdbTrending(_PluginBase):
                 if not items: break
                 
                 for item in items:
-                    if total_scanned >= limit: break # 超过限制停止扫描
-                    total_scanned += 1 # 计数加1
+                    if total_scanned >= limit: break
+                    total_scanned += 1
                     
-                    # 评分过滤
                     if item.get('vote_average', 0) < min_vote: continue
                     
                     tmdb_id = item.get('id')
@@ -516,14 +541,12 @@ class TmdbTrending(_PluginBase):
                     date = item.get('release_date') if media_type == MediaType.MOVIE else item.get('first_air_date')
                     year = date[:4] if date else ""
 
-                    # 年份过滤
                     if min_year > 0:
                         if not year: continue 
                         try:
                             if int(year) < min_year: continue
                         except ValueError: continue
 
-                    # 动漫逻辑
                     if is_anime_logic:
                         genre_ids = item.get('genre_ids', [])
                         origin_country = item.get('origin_country', [])
@@ -567,7 +590,6 @@ class TmdbTrending(_PluginBase):
             mediainfo.type = mtype
             mediainfo.tmdb_id = int(tmdb_id)
             
-            # 双重检测：订阅 + 媒体库
             if self.subscribechain.exists(mediainfo=mediainfo, meta=meta):
                 return False
             
