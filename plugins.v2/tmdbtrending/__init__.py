@@ -1,5 +1,5 @@
 # 强制打印日志
-print("加载 TmdbTrending 插件模块 (v1.1.1)...")
+print("加载 TmdbTrending 插件模块 (v1.2.0)...")
 
 import datetime
 from threading import Thread
@@ -24,9 +24,9 @@ except ImportError:
 class TmdbTrending(_PluginBase):
     # 插件基本信息
     plugin_name = "TMDB趋势订阅"
-    plugin_desc = "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持年份过滤、去重与通知。"
+    plugin_desc = "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持多榜单并发、年份过滤与去重。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.1.1"
+    plugin_version = "1.2.0"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -45,25 +45,25 @@ class TmdbTrending(_PluginBase):
     
     # 电影配置
     _movie_enabled = False
-    _movie_source = "trending_day"
-    _movie_genre_id = ""
+    _movie_sources = ["trending_day"] # 改为列表
+    _movie_genres = [] # 改为列表
     _movie_min_vote = 7.0
-    _movie_min_year = 0  # 新增：最低年份
+    _movie_min_year = 0
     _movie_count = 10
     
     # 电视剧配置
     _tv_enabled = False
-    _tv_source = "trending_week"
-    _tv_genre_id = ""
+    _tv_sources = ["trending_week"] # 改为列表
+    _tv_genres = [] # 改为列表
     _tv_min_vote = 7.5
-    _tv_min_year = 0 # 新增：最低年份
+    _tv_min_year = 0
     _tv_count = 10
     
     # 动漫配置
     _anime_enabled = False
     _anime_window = "week"
     _anime_min_vote = 7.0
-    _anime_min_year = 0 # 新增：最低年份
+    _anime_min_year = 0
     _anime_count = 10
 
     def init_plugin(self, config: dict = None):
@@ -80,16 +80,16 @@ class TmdbTrending(_PluginBase):
             
             # 电影
             self._movie_enabled = config.get("movie_enabled", False)
-            self._movie_source = config.get("movie_source", "trending_day")
-            self._movie_genre_id = config.get("movie_genre_id", "")
+            self._movie_sources = config.get("movie_sources", ["trending_day"])
+            self._movie_genres = config.get("movie_genres", [])
             self._movie_min_vote = float(config.get("movie_min_vote", 7.0))
             self._movie_min_year = int(config.get("movie_min_year", 0))
             self._movie_count = int(config.get("movie_count", 10))
             
             # 电视剧
             self._tv_enabled = config.get("tv_enabled", False)
-            self._tv_source = config.get("tv_source", "trending_week")
-            self._tv_genre_id = config.get("tv_genre_id", "")
+            self._tv_sources = config.get("tv_sources", ["trending_week"])
+            self._tv_genres = config.get("tv_genres", [])
             self._tv_min_vote = float(config.get("tv_min_vote", 7.5))
             self._tv_min_year = int(config.get("tv_min_year", 0))
             self._tv_count = int(config.get("tv_count", 10))
@@ -167,6 +167,49 @@ class TmdbTrending(_PluginBase):
             {'title': '按分类发现 (Discovery)', 'value': 'discover'},
         ]
 
+        # 电影分类
+        movie_genres_opt = [
+            {'title': '动作 (Action)', 'value': '28'},
+            {'title': '冒险 (Adventure)', 'value': '12'},
+            {'title': '动画 (Animation)', 'value': '16'},
+            {'title': '喜剧 (Comedy)', 'value': '35'},
+            {'title': '犯罪 (Crime)', 'value': '80'},
+            {'title': '纪录 (Documentary)', 'value': '99'},
+            {'title': '剧情 (Drama)', 'value': '18'},
+            {'title': '家庭 (Family)', 'value': '10751'},
+            {'title': '奇幻 (Fantasy)', 'value': '14'},
+            {'title': '历史 (History)', 'value': '36'},
+            {'title': '恐怖 (Horror)', 'value': '27'},
+            {'title': '音乐 (Music)', 'value': '10402'},
+            {'title': '悬疑 (Mystery)', 'value': '9648'},
+            {'title': '爱情 (Romance)', 'value': '10749'},
+            {'title': '科幻 (Sci-Fi)', 'value': '878'},
+            {'title': '电视电影 (TV Movie)', 'value': '10770'},
+            {'title': '惊悚 (Thriller)', 'value': '53'},
+            {'title': '战争 (War)', 'value': '10752'},
+            {'title': '西部 (Western)', 'value': '37'},
+        ]
+
+        # 电视剧分类
+        tv_genres_opt = [
+            {'title': '动作冒险 (Action & Adventure)', 'value': '10759'},
+            {'title': '动画 (Animation)', 'value': '16'},
+            {'title': '喜剧 (Comedy)', 'value': '35'},
+            {'title': '犯罪 (Crime)', 'value': '80'},
+            {'title': '纪录 (Documentary)', 'value': '99'},
+            {'title': '剧情 (Drama)', 'value': '18'},
+            {'title': '家庭 (Family)', 'value': '10751'},
+            {'title': '儿童 (Kids)', 'value': '10762'},
+            {'title': '悬疑 (Mystery)', 'value': '9648'},
+            {'title': '新闻 (News)', 'value': '10763'},
+            {'title': '真人秀 (Reality)', 'value': '10764'},
+            {'title': '科幻奇幻 (Sci-Fi & Fantasy)', 'value': '10765'},
+            {'title': '肥皂剧 (Soap)', 'value': '10766'},
+            {'title': '脱口秀 (Talk)', 'value': '10767'},
+            {'title': '战争政治 (War & Politics)', 'value': '10768'},
+            {'title': '西部 (Western)', 'value': '37'},
+        ]
+
         return [
             {
                 'component': 'VForm',
@@ -210,17 +253,18 @@ class TmdbTrending(_PluginBase):
                         'component': 'VRow',
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'movie_enabled', 'label': '启用'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_source', 'label': '榜单来源', 'items': movie_sources}}]},
+                            # 多选榜单
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_sources', 'label': '榜单来源(可多选)', 'multiple': True, 'chips': True, 'items': movie_sources}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_min_vote', 'label': '最低分', 'type': 'number'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_min_year', 'label': '最低年份', 'placeholder': '0为不限', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_count', 'label': '数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_count', 'label': '单榜数量', 'type': 'number'}}]}
                         ]
                     },
-                    # 下一行用于展示 Discovery Genre ID
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 12}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_genre_id', 'label': '分类ID (仅Discovery来源必填)', 'placeholder': '如 878 (科幻)'}}]}
+                            # 多选分类
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 12}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_genres', 'label': '指定分类 (仅Discovery来源生效, 可多选)', 'multiple': True, 'chips': True, 'clearable': True, 'items': movie_genres_opt}}]}
                         ]
                     },
                     # 电视剧配置
@@ -229,16 +273,18 @@ class TmdbTrending(_PluginBase):
                         'component': 'VRow',
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'tv_enabled', 'label': '启用'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_source', 'label': '榜单来源', 'items': tv_sources}}]},
+                            # 多选榜单
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_sources', 'label': '榜单来源(可多选)', 'multiple': True, 'chips': True, 'items': tv_sources}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_min_vote', 'label': '最低分', 'type': 'number'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_min_year', 'label': '最低年份', 'placeholder': '0为不限', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_count', 'label': '数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_count', 'label': '单榜数量', 'type': 'number'}}]}
                         ]
                     },
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 12}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_genre_id', 'label': '分类ID (仅Discovery来源必填)', 'placeholder': '如 16 (动画), 18 (剧情)'}}]}
+                            # 多选分类
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 12}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_genres', 'label': '指定分类 (仅Discovery来源生效, 可多选)', 'multiple': True, 'chips': True, 'clearable': True, 'items': tv_genres_opt}}]}
                         ]
                     },
                     # 动漫配置
@@ -264,15 +310,15 @@ class TmdbTrending(_PluginBase):
             "tmdb_api_key": "",
             # Movie
             "movie_enabled": False,
-            "movie_source": "trending_day",
-            "movie_genre_id": "",
+            "movie_sources": ["trending_day"],
+            "movie_genres": [],
             "movie_min_vote": 7.0,
             "movie_min_year": 0,
             "movie_count": 10,
             # TV
             "tv_enabled": False,
-            "tv_source": "trending_week",
-            "tv_genre_id": "",
+            "tv_sources": ["trending_week"],
+            "tv_genres": [],
             "tv_min_vote": 7.5,
             "tv_min_year": 0,
             "tv_count": 10,
@@ -327,31 +373,67 @@ class TmdbTrending(_PluginBase):
         
         # 1. 处理电影
         if self._movie_enabled:
-            added_list.extend(self.__fetch_and_process(
-                media_type=MediaType.MOVIE,
-                source=self._movie_source,
-                genre_id=self._movie_genre_id,
-                min_vote=self._movie_min_vote,
-                min_year=self._movie_min_year,
-                limit=self._movie_count,
-                category_label="电影"
-            ))
+            # 兼容处理：确保是列表
+            sources = self._movie_sources if isinstance(self._movie_sources, list) else [self._movie_sources]
+            genres = self._movie_genres if isinstance(self._movie_genres, list) else []
+
+            for src in sources:
+                if src == 'discover':
+                    # 如果选了 Discover，遍历所有选中的分类
+                    target_genres = genres if genres else [""] # 如果没选分类，传空串拉取默认发现
+                    for genre_id in target_genres:
+                        added_list.extend(self.__fetch_and_process(
+                            media_type=MediaType.MOVIE,
+                            source=src,
+                            genre_id=genre_id,
+                            min_vote=self._movie_min_vote,
+                            min_year=self._movie_min_year,
+                            limit=self._movie_count,
+                            category_label="电影"
+                        ))
+                else:
+                    # 其他榜单直接拉取
+                    added_list.extend(self.__fetch_and_process(
+                        media_type=MediaType.MOVIE,
+                        source=src,
+                        genre_id="",
+                        min_vote=self._movie_min_vote,
+                        min_year=self._movie_min_year,
+                        limit=self._movie_count,
+                        category_label="电影"
+                    ))
         
         # 2. 处理电视剧
         if self._tv_enabled:
-            added_list.extend(self.__fetch_and_process(
-                media_type=MediaType.TV,
-                source=self._tv_source,
-                genre_id=self._tv_genre_id,
-                min_vote=self._tv_min_vote,
-                min_year=self._tv_min_year,
-                limit=self._tv_count,
-                category_label="电视剧"
-            ))
+            sources = self._tv_sources if isinstance(self._tv_sources, list) else [self._tv_sources]
+            genres = self._tv_genres if isinstance(self._tv_genres, list) else []
+
+            for src in sources:
+                if src == 'discover':
+                    target_genres = genres if genres else [""]
+                    for genre_id in target_genres:
+                        added_list.extend(self.__fetch_and_process(
+                            media_type=MediaType.TV,
+                            source=src,
+                            genre_id=genre_id,
+                            min_vote=self._tv_min_vote,
+                            min_year=self._tv_min_year,
+                            limit=self._tv_count,
+                            category_label="电视剧"
+                        ))
+                else:
+                    added_list.extend(self.__fetch_and_process(
+                        media_type=MediaType.TV,
+                        source=src,
+                        genre_id="",
+                        min_vote=self._tv_min_vote,
+                        min_year=self._tv_min_year,
+                        limit=self._tv_count,
+                        category_label="电视剧"
+                    ))
             
         # 3. 处理动漫 (特殊逻辑)
         if self._anime_enabled:
-            # 动漫本质上使用 TV 的 Trending 接口
             source = f"trending_{self._anime_window}"
             added_list.extend(self.__fetch_and_process(
                 media_type=MediaType.TV,
@@ -386,10 +468,9 @@ class TmdbTrending(_PluginBase):
 
         # 根据 Source 解析 URL
         if source == 'discover':
-            if not genre_id:
-                logger.warning(f"[{category_label}] 选择了按分类发现，但未填写分类ID，跳过")
-                return []
-            url = f"{base_url}/discover/{type_str}?{params}&with_genres={genre_id}&sort_by=popularity.desc"
+            url = f"{base_url}/discover/{type_str}?{params}&sort_by=popularity.desc"
+            if genre_id:
+                url += f"&with_genres={genre_id}"
         elif source.startswith('trending_'):
             window = source.split('_')[1] # day or week
             url = f"{base_url}/trending/{type_str}/{window}?{params}"
@@ -410,7 +491,7 @@ class TmdbTrending(_PluginBase):
         results = []
         page = 1
         
-        # 循环翻页直到满足 limit
+        # 循环翻页直到满足 limit (注意：对于Discovery+多分类的情况，这里的limit是针对【每个分类】的)
         while len(results) < limit and page <= 5:
             try:
                 # 拼接 page 参数
@@ -434,10 +515,10 @@ class TmdbTrending(_PluginBase):
                     date = item.get('release_date') if media_type == MediaType.MOVIE else item.get('first_air_date')
                     year = date[:4] if date else ""
 
-                    # 年份过滤 (新增)
+                    # 年份过滤
                     if min_year > 0:
                         if not year: 
-                            continue # 没有年份的跳过，或者你可以选择保留
+                            continue 
                         try:
                             if int(year) < min_year:
                                 continue
@@ -449,7 +530,6 @@ class TmdbTrending(_PluginBase):
                         genre_ids = item.get('genre_ids', [])
                         origin_country = item.get('origin_country', [])
                         lang = item.get('original_language', '')
-                        # 必须包含动画分类(16) 且 (产地是JP 或 语言是ja)
                         if not (16 in genre_ids and ('JP' in origin_country or lang == 'ja')):
                             continue
                     
@@ -459,16 +539,21 @@ class TmdbTrending(_PluginBase):
                     
                     # 添加订阅
                     if self.__add_subscribe(title, year, media_type, tmdb_id, category_label):
+                        # 如果是 Discovery，记录具体的分类来源
+                        display_source = source
+                        if source == 'discover' and genre_id:
+                            display_source = f"discover(genre:{genre_id})"
+
                         res_item = {
                             'title': title, 
                             'type': category_label, 
                             'vote': item.get('vote_average'), 
                             'tmdb_id': tmdb_id, 
                             'year': year,
-                            'source_type': source
+                            'source_type': display_source
                         }
                         results.append(res_item)
-                        self.__save_history(title, category_label, tmdb_id, item.get('vote_average'), unique_key, year, source)
+                        self.__save_history(title, category_label, tmdb_id, item.get('vote_average'), unique_key, year, display_source)
                 
                 page += 1
             except Exception as e:
