@@ -4,11 +4,12 @@
     "release": false,
     "description": "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持多榜单并发、年份过滤与去重。",
     "labels": "订阅,TMDB,榜单",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "icon": "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg",
     "author": "MoviePilot-Plugins",
     "level": 1,
     "history": {
+      "v1.2.2": "修复：修复立即运行后自动关闭的Bug；修正榜单扫描逻辑，仅检查前N名而非无限订阅。",
       "v1.2.1": "修复：增加对媒体库已存在资源的检测，防止重复订阅。",
       "v1.2.0": "重磅升级：支持同时选择多个榜单源；支持直接多选 TMDB 官方分类；逻辑优化。",
       "v1.1.1": "新增：为每个分类添加“最低年份”配置，可过滤旧资源。",
