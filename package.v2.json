@@ -1,12 +1,15 @@
 {
-  "name": "tmdbtrendssubscribe",
-  "version": "1.0.0",
-  "title": "TMDB趋势自动订阅",
-  "description": "自动订阅TMDB趋势电影/电视剧/动画，支持自定义评分、订阅时间、分类及条数，订阅后发送通知",
-  "author": "outxool",
-  "homepage": "https://github.com/yourusername/tmdbtrendssubscribe",
-  "tags": ["TMDB", "订阅", "趋势", "自动"],
-  "icon": "plugins.v2/tmdbtrendssubscribe/assets/tmdb.png",  # 适配plugins.v2路径
-  "isV2": true,
-  "requirements": []
+    "tmdbtrendssubscribe": {
+        "name": "TMDB趋势订阅",
+        "release": false,
+        "description": "自动订阅TMDB热门/趋势的电影、电视剧、动画等内容",
+        "labels": "订阅,TMDB,电影,电视剧,动画",
+        "version": "1.0.0",
+        "icon": "https://www.themoviedb.org/assets/2/favicon-32x32-543a21832c8931d3494a68881f6afcafc58e96c5d324345377f3197a37b367b5.png",
+        "author": "PluginCreator",
+        "level": 1,
+        "history": {
+            "v1.0.0": "初始版本，支持TMDB趋势自动订阅"
+        }
+    }
 }
