@@ -2,16 +2,16 @@
   "TmdbTrending": {
     "name": "TMDB趋势订阅",
     "release": false,
-    "description": "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持去重与通知。",
+    "description": "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持年份过滤、去重与通知。",
     "labels": "订阅,TMDB,榜单",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "icon": "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg",
     "author": "MoviePilot-Plugins",
     "level": 1,
     "history": {
+      "v1.1.1": "新增：为每个分类添加“最低年份”配置，可过滤旧资源。",
       "v1.1.0": "功能升级：支持选择榜单来源（趋势/热映/热门/高分/按分类发现）。",
-      "v1.0.7": "新增：支持“立即运行一次”和“清除历史记录”功能。",
-      "v1.0.6": "修复：严格遵循小写文件夹+大写类名规范。"
+      "v1.0.7": "新增：支持“立即运行一次”和“清除历史记录”功能。"
     }
   }
 }
