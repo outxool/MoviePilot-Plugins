@@ -21,7 +21,7 @@ class TmdbTrending(_PluginBase):
     plugin_name = "TMDB趋势订阅"
     plugin_desc = "自动订阅 TMDB 热门趋势（电影/电视剧/动漫），支持评分过滤与消息通知。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.0"
+    plugin_version = "1.0.0"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
