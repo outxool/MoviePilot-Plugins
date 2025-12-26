@@ -1,5 +1,5 @@
 # 强制打印日志
-print("加载 TmdbTrending 插件模块 (v1.2.1)...")
+print("加载 TmdbTrending 插件模块 (v1.2.2)...")
 
 import datetime
 from threading import Thread
@@ -7,7 +7,6 @@ from typing import Tuple, List, Dict, Any
 
 from apscheduler.triggers.cron import CronTrigger
 
-# 引入 DownloadChain 用于检测媒体库是否已存在
 from app.chain.download import DownloadChain
 from app.chain.subscribe import SubscribeChain
 from app.core.config import settings
@@ -28,7 +27,7 @@ class TmdbTrending(_PluginBase):
     plugin_name = "TMDB趋势订阅"
     plugin_desc = "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持多榜单并发、年份过滤与去重。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -108,8 +107,14 @@ class TmdbTrending(_PluginBase):
         self.__execute_once_operations()
 
     def __execute_once_operations(self):
+        """
+        执行一次性操作，并正确更新配置
+        """
         config_updated = False
-        update_dict = {}
+        # 修复 Bug 1：更新配置时必须带上 enabled 状态，防止插件自动关闭
+        update_dict = {
+            "enabled": self._enabled
+        }
 
         if self._clear_history:
             logger.info("TMDB趋势订阅：正在清除历史记录...")
@@ -257,17 +262,15 @@ class TmdbTrending(_PluginBase):
                         'component': 'VRow',
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'movie_enabled', 'label': '启用'}}]},
-                            # 多选榜单
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_sources', 'label': '榜单来源(可多选)', 'multiple': True, 'chips': True, 'items': movie_sources}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_min_vote', 'label': '最低分', 'type': 'number'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_min_year', 'label': '最低年份', 'placeholder': '0为不限', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_count', 'label': '单榜数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_count', 'label': '检查TopN', 'type': 'number', 'placeholder': '前多少名'}}]}
                         ]
                     },
                     {
                         'component': 'VRow',
                         'content': [
-                            # 多选分类
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 12}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_genres', 'label': '指定分类 (仅Discovery来源生效, 可多选)', 'multiple': True, 'chips': True, 'clearable': True, 'items': movie_genres_opt}}]}
                         ]
                     },
@@ -277,17 +280,15 @@ class TmdbTrending(_PluginBase):
                         'component': 'VRow',
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'tv_enabled', 'label': '启用'}}]},
-                            # 多选榜单
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_sources', 'label': '榜单来源(可多选)', 'multiple': True, 'chips': True, 'items': tv_sources}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_min_vote', 'label': '最低分', 'type': 'number'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_min_year', 'label': '最低年份', 'placeholder': '0为不限', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_count', 'label': '单榜数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_count', 'label': '检查TopN', 'type': 'number', 'placeholder': '前多少名'}}]}
                         ]
                     },
                     {
                         'component': 'VRow',
                         'content': [
-                            # 多选分类
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 12}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_genres', 'label': '指定分类 (仅Discovery来源生效, 可多选)', 'multiple': True, 'chips': True, 'clearable': True, 'items': tv_genres_opt}}]}
                         ]
                     },
@@ -300,7 +301,7 @@ class TmdbTrending(_PluginBase):
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'anime_window', 'label': '趋势周期', 'items': [{'title': '今日', 'value': 'day'}, {'title': '本周', 'value': 'week'}]}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'anime_min_vote', 'label': '最低分', 'type': 'number'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'anime_min_year', 'label': '最低年份', 'placeholder': '0为不限', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'anime_count', 'label': '数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'anime_count', 'label': '检查TopN', 'type': 'number', 'placeholder': '前多少名'}}]}
                         ]
                     }
                 ]
@@ -433,7 +434,7 @@ class TmdbTrending(_PluginBase):
                         category_label="电视剧"
                     ))
             
-        # 3. 处理动漫 (特殊逻辑)
+        # 3. 处理动漫
         if self._anime_enabled:
             source = f"trending_{self._anime_window}"
             added_list.extend(self.__fetch_and_process(
@@ -454,7 +455,7 @@ class TmdbTrending(_PluginBase):
 
     def __fetch_and_process(self, media_type: MediaType, source: str, genre_id: str, min_vote: float, min_year: int, limit: int, category_label: str, is_anime_logic: bool = False) -> List[dict]:
         """
-        通用获取和处理逻辑
+        通用获取和处理逻辑 - 修复 Bug 2: 仅扫描前 N 个条目，而不是无限查找
         """
         api_key = self._tmdb_api_key or settings.TMDB_API_KEY
         if not api_key:
@@ -467,13 +468,12 @@ class TmdbTrending(_PluginBase):
         url = ""
         params = f"api_key={api_key}&language=zh-CN"
 
-        # 根据 Source 解析 URL
         if source == 'discover':
             url = f"{base_url}/discover/{type_str}?{params}&sort_by=popularity.desc"
             if genre_id:
                 url += f"&with_genres={genre_id}"
         elif source.startswith('trending_'):
-            window = source.split('_')[1] # day or week
+            window = source.split('_')[1] 
             url = f"{base_url}/trending/{type_str}/{window}?{params}"
         elif source == 'now_playing':
             url = f"{base_url}/movie/now_playing?{params}"
@@ -486,15 +486,16 @@ class TmdbTrending(_PluginBase):
         elif source == 'top_rated':
             url = f"{base_url}/{type_str}/top_rated?{params}"
         else:
-            logger.error(f"未知的榜单来源: {source}")
             return []
 
         results = []
         page = 1
-        
-        while len(results) < limit and page <= 5:
+        total_scanned = 0 # 记录扫描的总条目数
+
+        # 逻辑修改：不再以 results < limit 为循环条件，而是以 total_scanned < limit
+        # 这确保了只检查榜单的 Top N，而不是一直翻页直到填满 N 个订阅
+        while total_scanned < limit and page <= 5:
             try:
-                # 拼接 page 参数
                 req_url = f"{url}&page={page}"
                 response = RequestUtils().get_res(req_url)
                 if not response: break
@@ -504,12 +505,12 @@ class TmdbTrending(_PluginBase):
                 if not items: break
                 
                 for item in items:
-                    if len(results) >= limit: break
+                    if total_scanned >= limit: break # 超过限制停止扫描
+                    total_scanned += 1 # 计数加1
                     
                     # 评分过滤
                     if item.get('vote_average', 0) < min_vote: continue
                     
-                    # 提取基础信息
                     tmdb_id = item.get('id')
                     title = item.get('title') if media_type == MediaType.MOVIE else item.get('name')
                     date = item.get('release_date') if media_type == MediaType.MOVIE else item.get('first_air_date')
@@ -517,15 +518,12 @@ class TmdbTrending(_PluginBase):
 
                     # 年份过滤
                     if min_year > 0:
-                        if not year: 
-                            continue 
+                        if not year: continue 
                         try:
-                            if int(year) < min_year:
-                                continue
-                        except ValueError:
-                            continue
+                            if int(year) < min_year: continue
+                        except ValueError: continue
 
-                    # 动漫特殊逻辑筛选
+                    # 动漫逻辑
                     if is_anime_logic:
                         genre_ids = item.get('genre_ids', [])
                         origin_country = item.get('origin_country', [])
@@ -533,13 +531,10 @@ class TmdbTrending(_PluginBase):
                         if not (16 in genre_ids and ('JP' in origin_country or lang == 'ja')):
                             continue
                     
-                    # 去重 (插件历史)
                     unique_key = f"{category_label}:{tmdb_id}"
                     if self.__is_processed(unique_key): continue
                     
-                    # 添加订阅 (核心：MP重复检测 & 媒体库检测)
                     if self.__add_subscribe(title, year, media_type, tmdb_id, category_label):
-                        # 如果是 Discovery，记录具体的分类来源
                         display_source = source
                         if source == 'discover' and genre_id:
                             display_source = f"discover(genre:{genre_id})"
@@ -572,17 +567,15 @@ class TmdbTrending(_PluginBase):
             mediainfo.type = mtype
             mediainfo.tmdb_id = int(tmdb_id)
             
-            # 1. 检查订阅表 (Subscription Table)
+            # 双重检测：订阅 + 媒体库
             if self.subscribechain.exists(mediainfo=mediainfo, meta=meta):
                 return False
-                
-            # 2. 检查媒体库 (Library / Completed Downloads)
+            
             exist_flag, _ = self.downloadchain.get_no_exists_info(meta=meta, mediainfo=mediainfo)
             if exist_flag:
                 logger.info(f"[{category_name}] 媒体库已存在: {title}，跳过")
                 return False
 
-            # 3. 添加订阅
             self.subscribechain.add(title=title, year=year, mtype=mtype, tmdbid=int(tmdb_id), season=None, username="TMDB趋势插件")
             logger.info(f"[{category_name}] 订阅成功: {title}")
             return True
