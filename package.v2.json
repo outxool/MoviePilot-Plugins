@@ -14,5 +14,19 @@
       "v1.2.1": "修复：增加对媒体库已存在资源的检测，防止重复订阅。",
       "v1.2.0": "重磅升级：支持同时选择多个榜单源；支持直接多选 TMDB 官方分类；逻辑优化。"
     }
+  },
+  "DoubanRank": {
+    "name": "豆瓣榜单订阅增强版",
+    "description": "监控豆瓣热门榜单，自动添加订阅。",
+    "labels": "订阅,豆瓣",
+    "version": "2.0.3",
+    "icon": "https://img3.doubanio.com/favicon.ico",
+    "author": "jxxghp",
+    "level": 2,
+    "history": {
+      "v2.0.3": "重命名为增强版；集成 User-Agent 修复 RSSHub 抓取失败问题。",
+      "v2.0.2": "修复：兼容 MP v2.8.8；优化代理处理。",
+      "v2.0.1": "优化douban_id匹配和类型匹配"
+    }
   }
 }
