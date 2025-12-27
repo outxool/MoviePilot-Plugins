@@ -17,16 +17,15 @@
   },
   "DoubanRank": {
     "name": "豆瓣榜单订阅增强版（自用）",
-    "description": "直接抓取豆瓣官网数据（无需RSSHub），支持热门影视、Top250等榜单订阅。",
+    "description": "直接抓取豆瓣官网数据（无需RSSHub），支持热门影视、Top250等榜单订阅，智能去重。",
     "labels": "订阅,豆瓣",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "icon": "https://img3.doubanio.com/favicon.ico",
     "author": "outxool",
     "level": 2,
     "history": {
-      "v3.0.0": "重构：弃用RSSHub，改为直接爬取豆瓣接口和网页，解决无代理环境下无法获取数据的问题。",
-      "v2.0.5": "修改：更换默认 RSSHub 地址。",
-      "v2.0.4": "修改：更名并修复配置保存丢失Bug。"
+      "v3.0.1": "修复：逻辑重构对齐TMDB插件；增加DownloadChain检查防止重复订阅已入库资源；优化豆瓣ID转TMDB匹配。",
+      "v3.0.0": "重构：弃用RSSHub，改为直接爬取豆瓣接口和网页，解决无代理环境下无法获取数据的问题。"
     }
   }
 }
