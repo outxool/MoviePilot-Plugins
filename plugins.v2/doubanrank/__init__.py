@@ -1,7 +1,7 @@
 import datetime
 import re
 import xml.dom.minidom
-from threading import Event
+from threading import Event, Thread
 from typing import Tuple, List, Dict, Any
 
 import pytz
@@ -27,12 +27,12 @@ except ImportError:
 
 class DoubanRank(_PluginBase):
     # 插件基本信息
-    plugin_name = "豆瓣榜单订阅增强版"
+    plugin_name = "豆瓣榜单订阅增强版（自用）"
     plugin_desc = "监控豆瓣热门榜单，自动添加订阅。"
     plugin_icon = "movie.jpg"
-    plugin_version = "2.0.3"
-    plugin_author = "jxxghp"
-    plugin_author_url = "https://github.com/jxxghp"
+    plugin_version = "2.0.4"
+    plugin_author = "outxool"
+    plugin_author_url = ""
     plugin_config_prefix = "doubanrank_"
     plugin_order = 6
     auth_level = 2
@@ -60,7 +60,6 @@ class DoubanRank(_PluginBase):
     _ranks = []
     _vote = 0
     _clear = False
-    _clearflag = False
     _proxy = False
     _rsshub = "https://rsshub.app"
 
@@ -88,21 +87,45 @@ class DoubanRank(_PluginBase):
         self.stop_service()
 
         if self._enabled or self._onlyonce:
-            # 立即运行逻辑
-            if self._onlyonce:
+            # 正常定时服务
+            if self._enabled and self._cron:
                 self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-                logger.info("豆瓣榜单订阅：立即运行一次")
-                self._scheduler.add_job(func=self.__refresh_rss, trigger='date',
-                                        run_date=datetime.datetime.now(tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3))
+                self._scheduler.add_job(func=self.__refresh_rss, trigger=CronTrigger.from_crontab(self._cron), name="豆瓣榜单订阅")
+                if self._scheduler.get_jobs():
+                    self._scheduler.start()
+            elif self._enabled:
+                # 默认每天8点
+                self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+                self._scheduler.add_job(func=self.__refresh_rss, trigger=CronTrigger.from_crontab("0 8 * * *"), name="豆瓣榜单订阅")
                 if self._scheduler.get_jobs():
                     self._scheduler.start()
 
-            # 处理一次性开关状态复位
-            if self._onlyonce or self._clear:
-                self._onlyonce = False
-                self._clearflag = self._clear
-                self._clear = False
-                self.__update_config()
+            # 执行一次性操作（立即运行/清理缓存）
+            self.__execute_once_operations()
+
+    def __execute_once_operations(self):
+        """
+        执行一次性操作并安全更新配置
+        """
+        config_updated = False
+        
+        # 1. 清理缓存
+        if self._clear:
+            self.save_data('history', [])
+            self._clear = False
+            config_updated = True
+            logger.info("豆瓣榜单订阅：历史记录已清理")
+
+        # 2. 立即运行
+        if self._onlyonce:
+            logger.info("豆瓣榜单订阅：检测到立即运行指令，正在后台执行...")
+            Thread(target=self.__refresh_rss).start()
+            self._onlyonce = False
+            config_updated = True
+
+        # 3. 回写配置（全量保存，防止丢失）
+        if config_updated:
+            self.__update_config()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -200,13 +223,14 @@ class DoubanRank(_PluginBase):
         if not historys:
             return [{'component': 'div', 'text': '暂无数据', 'props': {'class': 'text-center'}}]
         
-        historys = sorted(historys, key=lambda x: x.get('time'), reverse=True)
+        historys = sorted(historys, key=lambda x: x.get('time'), reverse=True)[:50]
         contents = []
         for history in historys:
             title = history.get("title")
             doubanid = history.get("doubanid")
             contents.append({
                 'component': 'VCard',
+                'props': {'class': 'mx-auto mb-2', 'width': '100%'},
                 'content': [
                     {
                         "component": "VDialogCloseBtn",
@@ -271,10 +295,7 @@ class DoubanRank(_PluginBase):
             logger.info(f"未设置榜单RSS地址")
             return
 
-        if self._clearflag:
-            history = []
-        else:
-            history = self.get_data('history') or []
+        history = self.get_data('history') or []
 
         for addr in addr_list:
             if not addr: continue
@@ -322,10 +343,14 @@ class DoubanRank(_PluginBase):
                     
                     # 存在性检查 (媒体库 + 订阅)
                     exist_flag, _ = DownloadChain().get_no_exists_info(meta=meta, mediainfo=mediainfo)
-                    if exist_flag: continue
+                    if exist_flag: 
+                        logger.info(f'{mediainfo.title_year} 媒体库中已存在')
+                        continue
                     
                     subscribechain = SubscribeChain()
-                    if subscribechain.exists(mediainfo=mediainfo, meta=meta): continue
+                    if subscribechain.exists(mediainfo=mediainfo, meta=meta): 
+                        logger.info(f'{mediainfo.title_year} 订阅已存在')
+                        continue
                     
                     # 添加订阅
                     subscribechain.add(title=mediainfo.title, year=mediainfo.year, mtype=mediainfo.type, 
@@ -341,7 +366,6 @@ class DoubanRank(_PluginBase):
                 logger.error(f"处理RSS {addr} 出错: {e}")
 
         self.save_data('history', history)
-        self._clearflag = False
         logger.info(f"所有榜单RSS刷新完成")
 
     def __get_rss_info(self, addr) -> List[dict]:
@@ -354,13 +378,21 @@ class DoubanRank(_PluginBase):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             
-            # 处理代理
-            if self._proxy and settings.PROXY:
-                req = RequestUtils(proxies=settings.PROXY)
+            # 处理代理逻辑：仅当用户开启且系统配置了代理时生效
+            req_proxy = None
+            if self._proxy:
+                if settings.PROXY:
+                    req_proxy = settings.PROXY
+                    logger.info(f"使用代理请求 RSS: {addr}")
+                else:
+                    logger.warning("插件开启了代理，但 MoviePilot 未配置系统代理(PROXY)，将尝试直连")
+            
+            # 构造请求工具
+            if req_proxy:
+                req = RequestUtils(proxies=req_proxy)
             else:
                 req = RequestUtils()
                 
-            logger.info(f"正在请求 RSS: {addr} (Proxy: {self._proxy})")
             ret = req.get_res(addr, headers=headers)
             
             if not ret or ret.status_code != 200:
@@ -390,7 +422,7 @@ class DoubanRank(_PluginBase):
                         'link': link,
                         'doubanid': doubanid,
                         'year': year,
-                        'type': 'movie' # RSSHub豆瓣Feed通常不明确返回类型，默认为movie，后续靠识别修正
+                        'type': 'movie' 
                     })
                 except Exception as e:
                     logger.debug(f"解析单条RSS失败: {e}")
