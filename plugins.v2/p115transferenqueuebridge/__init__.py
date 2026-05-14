@@ -31,8 +31,8 @@ class P115TransferEnqueueBridge(_PluginBase):
     plugin_desc = "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     plugin_version = "0.1.0"
-    plugin_author = "DDSRem"
-    author_url = "https://github.com/DDSRem"
+    plugin_author = "outxool"
+    author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
     plugin_order = 1
     auth_level = 1
