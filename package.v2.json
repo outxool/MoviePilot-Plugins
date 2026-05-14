@@ -41,5 +41,17 @@
     "history": {
       "v0.1.0": "初始版本：轮询 DownloadHistory 按来源用户名匹配，去重后调用 TransferChain 入队整理。"
     }
+  },
+  "P115StrgmSub": {
+    "name": "115网盘订阅追更魔改版",
+    "description": "115网盘订阅追更插件魔改版：解除8小时执行周期限制（最低1小时），移除Nullbr搜索源，保留HDHive和PanSou。",
+    "labels": "订阅,115,追更,网盘",
+    "version": "1.4.2",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
+    "author": "outxool",
+    "level": 1,
+    "history": {
+      "v1.4.2": "魔改版：解除Cron最小间隔8小时限制改为1小时；移除Nullbr搜索源。"
+    }
   }
 }
