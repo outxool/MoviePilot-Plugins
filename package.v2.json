@@ -6,11 +6,11 @@
     "labels": "订阅,TMDB,榜单",
     "version": "1.2.4",
     "icon": "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg",
-    "author": "MoviePilot-Plugins",
+    "author": "outxool",
     "level": 1,
     "history": {
-      "v1.2.4": "新增：增加全局“忽略日番”开关，在订阅非动漫分类时自动过滤日本动画。",
-      "v1.2.3": "修复：修复保存“立即运行”后配置丢失的问题。",
+      "v1.2.4": "新增：增加全局忽略日番开关，在订阅非动漫分类时自动过滤日本动画。",
+      "v1.2.3": "修复：修复保存立即运行后配置丢失的问题。",
       "v1.2.2": "修复：修复立即运行后自动关闭的Bug；修正榜单扫描逻辑，仅检查前N名而非无限订阅。",
       "v1.2.1": "修复：增加对媒体库已存在资源的检测，防止重复订阅。",
       "v1.2.0": "重磅升级：支持同时选择多个榜单源；支持直接多选 TMDB 官方分类；逻辑优化。"
@@ -28,6 +28,18 @@
       "v3.1.2": "修复：增加详细调试日志以排查静默跳过问题；优化年份/评分过滤逻辑。",
       "v3.1.1": "修复：解决年份过滤时类型错误导致的异常。",
       "v3.1.0": "重构：配置结构重构，支持电影/剧集/综艺分栏多选；支持评分/年份/TopN细分过滤；彻底清除旧版Ghost Tags。"
+    }
+  },
+  "P115TransferEnqueueBridge": {
+    "name": "115整理入队桥接",
+    "description": "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列，支持 CloudDrive2 路径映射、去重冷却、白名单目录过滤。",
+    "labels": "整理,115,转存,桥接",
+    "version": "0.1.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
+    "author": "outxool",
+    "level": 1,
+    "history": {
+      "v0.1.0": "初始版本：轮询 DownloadHistory 按来源用户名匹配，去重后调用 TransferChain 入队整理。"
     }
   }
 }
