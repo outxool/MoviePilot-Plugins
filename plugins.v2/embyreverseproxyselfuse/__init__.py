@@ -59,9 +59,9 @@ class EmbyReverseProxySelfUse(_PluginBase):
     )
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/Emby_A.png"
     plugin_version = "0.2.2"
-    plugin_author = "DDSRem"
-    author_url = "https://github.com/DDSRem"
-    plugin_config_prefix = "embyreverseproxy_"
+    plugin_author = "outxool"
+    author_url = "https://github.com/outxool"
+    plugin_config_prefix = "embyreverseproxyselfuse_"
     plugin_order = 20
     auth_level = 1
 
