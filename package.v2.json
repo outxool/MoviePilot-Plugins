@@ -59,7 +59,6 @@
     "description": "Emby 302 反向代理自用版：自动代理 HTTP 链接并 302 跳转最终地址，支持外部播放器调用。",
     "labels": "云盘,媒体,Emby,302,自用",
     "version": "0.2.2",
-    "release": true,
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/Emby_A.png",
     "author": "outxool",
     "level": 1,
