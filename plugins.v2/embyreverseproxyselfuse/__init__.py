@@ -53,7 +53,7 @@ class EmbyReverseProxySelfUse(_PluginBase):
     Emby 302 反向代理
     """
 
-    plugin_name = "Emby 302 反向代理"
+    plugin_name = "Emby 302 反向代理(自用版)"
     plugin_desc = (
         "Emby 302 反向代理，自动代理 HTTP 链接，跳转最终地址，支持外部播放器调用。"
     )
