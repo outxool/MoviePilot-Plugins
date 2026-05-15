@@ -48,20 +48,20 @@ def _parse_pin_rules(raw: str) -> List[Tuple[str, str]]:
     return result
 
 
-class EmbyReverseProxySelfUse(_PluginBase):
+class EmbyReverseProxy(_PluginBase):
     """
-    Emby 302 反向代理（自用版）
+    Emby 302 反向代理
     """
 
-    plugin_name = "Emby 302 反向代理（自用版）"
+    plugin_name = "Emby 302 反向代理"
     plugin_desc = (
-        "Emby 302 反向代理自用版：自动代理 HTTP 链接并 302 跳转最终地址，支持外部播放器调用。"
+        "Emby 302 反向代理，自动代理 HTTP 链接，跳转最终地址，支持外部播放器调用。"
     )
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/Emby_A.png"
     plugin_version = "0.2.2"
-    plugin_author = "outxool"
-    author_url = "https://github.com/outxool"
-    plugin_config_prefix = "embyreverseproxyselfuse_"
+    plugin_author = "DDSRem"
+    author_url = "https://github.com/DDSRem"
+    plugin_config_prefix = "embyreverseproxy_"
     plugin_order = 20
     auth_level = 1
 
@@ -118,17 +118,17 @@ class EmbyReverseProxySelfUse(_PluginBase):
                 self._thread = Thread(target=self._server.run, daemon=True)
                 self._thread.start()
                 logger.info(
-                    "EmbyReverseProxySelfUse 代理已启动: %s:%s -> %s",
+                    "EmbyReverseProxy 代理已启动: %s:%s -> %s",
                     self._host,
                     self._port,
                     self._emby_host,
                 )
             except Exception as e:
-                logger.error("EmbyReverseProxySelfUse 启动失败: %s", e, exc_info=True)
+                logger.error("EmbyReverseProxy 启动失败: %s", e, exc_info=True)
                 self._server = None
                 self._thread = None
         elif self._enabled and not self._emby_host:
-            logger.warning("EmbyReverseProxySelfUse 已启用但未配置 Emby 地址，代理未启动")
+            logger.warning("EmbyReverseProxy 已启用但未配置 Emby 地址，代理未启动")
 
     def _update_config(self) -> None:
         """
@@ -155,9 +155,9 @@ class EmbyReverseProxySelfUse(_PluginBase):
                 self._server.should_exit = True
                 if self._thread is not None and self._thread.is_alive():
                     self._thread.join(timeout=5.0)
-                logger.info("EmbyReverseProxySelfUse 代理已停止")
+                logger.info("EmbyReverseProxy 代理已停止")
             except Exception as e:
-                logger.error("EmbyReverseProxySelfUse 停止异常: %s", e, exc_info=True)
+                logger.error("EmbyReverseProxy 停止异常: %s", e, exc_info=True)
             finally:
                 self._server = None
                 self._thread = None
