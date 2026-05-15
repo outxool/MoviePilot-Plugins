@@ -48,7 +48,7 @@ def _parse_pin_rules(raw: str) -> List[Tuple[str, str]]:
     return result
 
 
-class EmbyReverseProxy(_PluginBase):
+class EmbyReverseProxySelfUse(_PluginBase):
     """
     Emby 302 反向代理
     """
