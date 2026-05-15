@@ -55,7 +55,7 @@
     }
   },
   "EmbyReverseProxySelfUse": {
-    "name": "Emby 302 反向代理（自用版）",
+    "name": "Emby302反向代理（自用版）",
     "description": "Emby 302 反向代理自用版：自动代理 HTTP 链接并 302 跳转最终地址，支持外部播放器调用。",
     "labels": "云盘,媒体,Emby,302,自用",
     "version": "0.2.2",
