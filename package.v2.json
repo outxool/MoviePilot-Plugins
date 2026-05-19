@@ -61,7 +61,6 @@
     "version": "1.0.5",
     "icon": "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/u115.png",
     "author": "outxool（基于 DDSRem 原版修改）",
-    "release": true,
     "level": 1,
     "history": {
       "v1.0.5": "收敛对外命令、API、服务与 dashboard，只保留 STRM 同步主链相关暴露面",
