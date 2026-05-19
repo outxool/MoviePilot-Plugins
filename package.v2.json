@@ -42,7 +42,7 @@
       "v0.1.0": "初始版本：轮询 DownloadHistory 按来源用户名匹配，去重后调用 TransferChain 入队整理。"
     }
   },
-  "P115StrgmSubMod": {
+  "P115StrgmSub": {
     "name": "115网盘订阅追更魔改版",
     "description": "115网盘订阅追更插件魔改版：解除8小时执行周期限制（最低1小时），移除Nullbr搜索源，保留HDHive和PanSou。",
     "labels": "订阅,115,追更,网盘",
@@ -51,31 +51,20 @@
     "author": "outxool",
     "level": 1,
     "history": {
-      "v1.4.2": "魔改版：解除Cron最小间隔8小时限制改为1小时；移除Nullbr搜索源；类名改为P115StrgmSubMod避免与原版冲突。"
-    }
-  },
-  "EmbyReverseProxySelfUse": {
-    "name": "Emby302反向代理（自用版）",
-    "description": "Emby 302 反向代理自用版：自动代理 HTTP 链接并 302 跳转最终地址，支持外部播放器调用。",
-    "labels": "云盘,媒体,Emby,302,自用",
-    "version": "0.2.2",
-    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/Emby_A.png",
-    "author": "outxool",
-    "level": 1,
-    "history": {
-      "v0.2.2": "自用版：基于 Emby 302 反向代理 0.2.2，修改插件名、作者、类名和配置前缀，避免与原版插件冲突。"
+      "v1.4.2": "魔改版：解除Cron最小间隔8小时限制改为1小时；移除Nullbr搜索源。"
     }
   },
   "P115StrmSync": {
     "name": "115网盘STRM同步",
-    "description": "基于原版 P115StrmHelper 修改，由 outxool/moviepilot-plugins 维护，独立保留 full/increment sync 主链",
+    "description": "115 网盘 STRM 全量/增量同步，独立保留同步主链",
     "labels": "云盘",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "icon": "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/u115.png",
     "author": "outxool（基于 DDSRem 原版修改）",
     "release": true,
     "level": 1,
     "history": {
+      "v1.0.5": "收敛对外命令、API、服务与 dashboard，只保留 STRM 同步主链相关暴露面",
       "v1.0.4": "重新整理独立发布包，仅保留 p115strmsync 所需目录与单插件 package 清单",
       "v1.0.3": "清理打包缓存文件，package 图标地址切换到 outxool/moviepilot-plugins 仓库",
       "v1.0.2": "更新维护仓库与作者信息为 outxool/moviepilot-plugins，并保留原版来源备注",
