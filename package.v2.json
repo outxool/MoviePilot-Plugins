@@ -65,5 +65,22 @@
     "history": {
       "v0.2.2": "自用版：基于 Emby 302 反向代理 0.2.2，修改插件名、作者、类名和配置前缀，避免与原版插件冲突。"
     }
+  },
+  "P115StrmSync": {
+    "name": "115网盘STRM同步",
+    "description": "基于原版 P115StrmHelper 修改，由 outxool/moviepilot-plugins 维护，独立保留 full/increment sync 主链",
+    "labels": "云盘",
+    "version": "1.0.4",
+    "icon": "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/u115.png",
+    "author": "outxool（基于 DDSRem 原版修改）",
+    "release": true,
+    "level": 1,
+    "history": {
+      "v1.0.4": "重新整理独立发布包，仅保留 p115strmsync 所需目录与单插件 package 清单",
+      "v1.0.3": "清理打包缓存文件，package 图标地址切换到 outxool/moviepilot-plugins 仓库",
+      "v1.0.2": "更新维护仓库与作者信息为 outxool/moviepilot-plugins，并保留原版来源备注",
+      "v1.0.1": "更新插件对外信息，明确标注基于原版 P115StrmHelper 修改",
+      "v1.0.0": "从 P115StrmHelper fork，独立插件化并保留 full/increment sync 主链"
+    }
   }
 }
