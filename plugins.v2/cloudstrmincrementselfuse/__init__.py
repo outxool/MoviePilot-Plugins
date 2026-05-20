@@ -3,21 +3,22 @@ import shutil
 import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import pytz
-from typing import Any, List, Dict, Tuple, Optional
+from fastapi import Query
 
-from app.core.event import eventmanager, Event
-from app.schemas.types import EventType
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.chain.storage import StorageChain
+from app.core.config import settings
+from app.core.event import Event, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
-from app.core.config import settings
-from app.utils.system import SystemUtils
-from app.chain.storage import StorageChain
 from app.schemas import FileItem
+from app.schemas.types import EventType
+from app.utils.system import SystemUtils
 
 
 class CloudStrmIncrementSelfUse(_PluginBase):
@@ -28,7 +29,7 @@ class CloudStrmIncrementSelfUse(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/create.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     # 插件作者
     plugin_author = "outxool（基于 thsrite 原版自用修改）"
     # 作者主页
@@ -570,7 +571,9 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             "cron": self._cron,
             "monitor_confs": self._monitor_confs,
             "no_del_dirs": self._no_del_dirs,
-            "rmt_mediaext": self._rmt_mediaext
+            "rmt_mediaext": self._rmt_mediaext,
+            "directory_browser_root": "/",
+            "directory_browser_current": "/"
         })
 
     def get_state(self) -> bool:
@@ -614,7 +617,73 @@ class CloudStrmIncrementSelfUse(_PluginBase):
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        pass
+        return [
+            {
+                "path": "/browse_dir",
+                "endpoint": self.browse_dir_api,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "浏览本地目录",
+            }
+        ]
+
+    @staticmethod
+    def browse_dir_api(path: str = Query(default="/", description="目录路径")) -> Dict[str, Any]:
+        """
+        浏览 MoviePilot 容器内本地目录，用于配置页下拉选择目录
+        """
+        try:
+            current_path = Path(path or "/")
+            if not current_path.exists():
+                return {"code": 1, "msg": f"目录不存在: {current_path}", "data": {"path": str(current_path), "items": []}}
+            if not current_path.is_dir():
+                current_path = current_path.parent
+
+            items = []
+            if str(current_path) != str(current_path.parent):
+                items.append({
+                    "title": ".. 上级目录",
+                    "value": str(current_path.parent),
+                    "name": "..",
+                    "path": str(current_path.parent),
+                    "is_dir": True
+                })
+
+            for item in current_path.iterdir():
+                if item.is_dir():
+                    item_path = str(item)
+                    items.append({
+                        "title": item_path,
+                        "value": item_path,
+                        "name": item.name,
+                        "path": item_path,
+                        "is_dir": True
+                    })
+
+            items = sorted(items, key=lambda x: (x["name"] != "..", x["name"].lower()))
+            return {"code": 0, "msg": "success", "data": {"path": str(current_path), "items": items}}
+        except Exception as err:
+            logger.error(f"浏览本地目录失败: {err}")
+            return {"code": 1, "msg": f"浏览本地目录失败: {err}", "data": {"path": path, "items": []}}
+
+    @staticmethod
+    def __directory_options(root_path: str = "/") -> List[Dict[str, str]]:
+        """
+        获取配置页下拉目录选项
+        """
+        try:
+            root = Path(root_path or "/")
+            if not root.exists() or not root.is_dir():
+                root = Path("/")
+            options = [{"title": str(root), "value": str(root)}]
+            for item in root.iterdir():
+                if item.is_dir():
+                    item_path = str(item)
+                    options.append({"title": item_path, "value": item_path})
+            return sorted(options, key=lambda x: x["title"].lower())
+        except Exception as err:
+            logger.error(f"获取目录下拉选项失败: {err}")
+            return [{"title": "/", "value": "/"}]
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
@@ -738,6 +807,51 @@ class CloudStrmIncrementSelfUse(_PluginBase):
                             {
                                 'component': 'VCol',
                                 'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'model': 'directory_browser_root',
+                                            'label': '目录下拉选择（容器根目录）',
+                                            'items': self.__directory_options('/'),
+                                            'clearable': True,
+                                            'hint': '先选择一个容器内目录，再复制到下面监控目录配置中使用',
+                                            'persistent_hint': True
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VCombobox',
+                                        'props': {
+                                            'model': 'directory_browser_current',
+                                            'label': '选择/输入目录',
+                                            'items': self.__directory_options('/'),
+                                            'clearable': True,
+                                            'hint': 'MoviePilot 后端表单不支持像自定义 Vue 那样逐级浏览，这里提供下拉+可输入辅助选择',
+                                            'persistent_hint': True
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
                                     'cols': 12
                                 },
                                 'content': [
@@ -745,7 +859,7 @@ class CloudStrmIncrementSelfUse(_PluginBase):
                                         'component': 'VTextarea',
                                         'props': {
                                             'model': 'monitor_confs',
-                                            'label': '监控目录',
+                                            'label': '监控目录配置',
                                             'rows': 5,
                                             'placeholder': '增量目录#监控目录#目的目录#媒体服务器内源文件路径'
                                         }
@@ -865,6 +979,8 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             "copy_files": False,
             "https": False,
             "monitor_confs": "",
+            "directory_browser_root": "/",
+            "directory_browser_current": "/",
             "no_del_dirs": "",
             "rmt_mediaext": ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
         }
