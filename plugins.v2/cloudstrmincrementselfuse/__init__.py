@@ -29,7 +29,7 @@ class CloudStrmIncrementSelfUse(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/create.png"
     # 插件版本
-    plugin_version = "1.2.1"
+    plugin_version = "1.3.0"
     # 插件作者
     plugin_author = "outxool（基于 thsrite 原版自用修改）"
     # 作者主页
@@ -884,9 +884,37 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             logger.error(f"获取目录下拉选项失败: {err}")
             return [{"title": "/", "value": "/"}]
 
-    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+    @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
         """
-        拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
+        返回插件使用的前端渲染模式
+
+        :return: Vue 渲染模式与前端资源目录
+        """
+        return "vue", "dist/assets"
+
+    def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
+        """
+        Vue模式下返回初始配置数据
+
+        :return: 页面定义为空，配置数据由 Vue 前端渲染
+        """
+        return None, {
+            "enabled": False,
+            "cron": "",
+            "onlyonce": False,
+            "copy_files": False,
+            "https": False,
+            "monitor_confs": "",
+            "generated_monitor_confs": "",
+            **self.__structured_defaults(),
+            "no_del_dirs": "",
+            "rmt_mediaext": ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
+        }
+
+    def get_form_legacy(self) -> Tuple[List[dict], Dict[str, Any]]:
+        """
+        旧版后端表单，保留为兼容参考；实际渲染使用 Vue 前端
         """
         return [
             {
