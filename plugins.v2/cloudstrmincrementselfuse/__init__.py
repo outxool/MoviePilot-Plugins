@@ -29,7 +29,7 @@ class CloudStrmIncrementSelfUse(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/create.png"
     # 插件版本
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     # 插件作者
     plugin_author = "outxool（基于 thsrite 原版自用修改）"
     # 作者主页
@@ -60,6 +60,9 @@ class CloudStrmIncrementSelfUse(_PluginBase):
     _cloudurlconf = {}
     _cloudpathconf = {}
     _storageconf = {}
+    _structured_conf_slots = 5
+    _structured_config = {}
+    _last_generated_monitor_confs = ""
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -73,6 +76,8 @@ class CloudStrmIncrementSelfUse(_PluginBase):
         self._cloudpathconf = {}
         self._increment_dir = {}
         self._storageconf = {}
+        self._structured_config = {}
+        self._last_generated_monitor_confs = ""
 
         if config:
             self._enabled = config.get("enabled")
@@ -80,7 +85,11 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             self._onlyonce = config.get("onlyonce")
             self._https = config.get("https")
             self._copy_files = config.get("copy_files")
-            self._monitor_confs = config.get("monitor_confs")
+            self._structured_config = self.__extract_structured_config(config)
+            structured_monitor_confs = self.__build_monitor_confs_from_form(config)
+            self._last_generated_monitor_confs = structured_monitor_confs
+            # v1.2.0 起：可视化配置行直接生成并替代监控目录配置；旧 monitor_confs 仅作为兼容兜底
+            self._monitor_confs = structured_monitor_confs or config.get("monitor_confs")
             self._no_del_dirs = config.get("no_del_dirs")
             self._rmt_mediaext = config.get(
                 "rmt_mediaext") or ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
@@ -93,6 +102,9 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
 
             # 读取目录配置
+            if not self._monitor_confs:
+                logger.error("未配置目录监控，请在可视化配置行中至少启用一行")
+                return
             monitor_confs = self._monitor_confs.split("\n")
             if not monitor_confs:
                 return
@@ -569,11 +581,11 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             "copy_files": self._copy_files,
             "https": self._https,
             "cron": self._cron,
-            "monitor_confs": self._monitor_confs,
+            "monitor_confs": self._last_generated_monitor_confs or self._monitor_confs,
+            "generated_monitor_confs": self._last_generated_monitor_confs or self._monitor_confs or "",
             "no_del_dirs": self._no_del_dirs,
             "rmt_mediaext": self._rmt_mediaext,
-            "directory_browser_root": "/",
-            "directory_browser_current": "/"
+            **self._structured_config
         })
 
     def get_state(self) -> bool:
@@ -616,6 +628,153 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             }]
         return []
 
+
+    @classmethod
+    def __slot_keys(cls, index: int) -> Dict[str, str]:
+        return {
+            "enabled": f"conf{index}_enabled",
+            "scan_type": f"conf{index}_scan_type",
+            "cd2_storage": f"conf{index}_cd2_storage",
+            "cd2_path": f"conf{index}_cd2_path",
+            "local_increment_dir": f"conf{index}_local_increment_dir",
+            "source_dir": f"conf{index}_source_dir",
+            "target_dir": f"conf{index}_target_dir",
+            "strm_type": f"conf{index}_strm_type",
+            "library_dir": f"conf{index}_library_dir",
+            "cloud_path": f"conf{index}_cloud_path",
+            "cloud_url": f"conf{index}_cloud_url",
+        }
+
+    @classmethod
+    def __structured_defaults(cls) -> Dict[str, Any]:
+        defaults = {}
+        for index in range(1, cls._structured_conf_slots + 1):
+            keys = cls.__slot_keys(index)
+            defaults.update({
+                keys["enabled"]: index == 1,
+                keys["scan_type"]: "cd2_storage",
+                keys["cd2_storage"]: "CloudDrive储存",
+                keys["cd2_path"]: "/",
+                keys["local_increment_dir"]: "",
+                keys["source_dir"]: "",
+                keys["target_dir"]: "",
+                keys["strm_type"]: "library",
+                keys["library_dir"]: "",
+                keys["cloud_path"]: "",
+                keys["cloud_url"]: "localhost:19798",
+            })
+        return defaults
+
+    @classmethod
+    def __extract_structured_config(cls, config: dict = None) -> Dict[str, Any]:
+        defaults = cls.__structured_defaults()
+        if not config:
+            return defaults
+        for key in defaults.keys():
+            if key in config:
+                defaults[key] = config.get(key)
+        return defaults
+
+    @staticmethod
+    def __clean_path(value: Any) -> str:
+        return str(value or "").strip()
+
+    @classmethod
+    def __build_monitor_confs_from_form(cls, config: dict = None) -> str:
+        if not config:
+            return ""
+        lines = []
+        for index in range(1, cls._structured_conf_slots + 1):
+            keys = cls.__slot_keys(index)
+            if not config.get(keys["enabled"]):
+                continue
+            scan_type = cls.__clean_path(config.get(keys["scan_type"])) or "cd2_storage"
+            if scan_type == "cd2_storage":
+                storage_name = cls.__clean_path(config.get(keys["cd2_storage"]))
+                cd2_path = cls.__clean_path(config.get(keys["cd2_path"])) or "/"
+                if not storage_name:
+                    logger.error(f"可视化配置第{index}行未填写CloudDrive2储存名称，已跳过")
+                    continue
+                increment_dir = f"cd2_storage://{storage_name}/{cd2_path.strip('/')}" if cd2_path != "/" else f"cd2_storage://{storage_name}/"
+            else:
+                increment_dir = cls.__clean_path(config.get(keys["local_increment_dir"]))
+
+            source_dir = cls.__clean_path(config.get(keys["source_dir"]))
+            target_dir = cls.__clean_path(config.get(keys["target_dir"]))
+            strm_type = cls.__clean_path(config.get(keys["strm_type"])) or "library"
+            if not increment_dir or not source_dir or not target_dir:
+                logger.error(f"可视化配置第{index}行缺少扫描目录/监控目录/目的目录，已跳过")
+                continue
+
+            if strm_type == "direct":
+                library_dir = cls.__clean_path(config.get(keys["library_dir"]))
+                if not library_dir:
+                    logger.error(f"可视化配置第{index}行选择直写路径但未填写媒体服务器内源文件路径，已跳过")
+                    continue
+                lines.append(f"{increment_dir}#{source_dir}#{target_dir}#{library_dir}")
+            else:
+                cloud_type = "alist" if strm_type == "alist" else "cd2"
+                cloud_path = cls.__clean_path(config.get(keys["cloud_path"])) or source_dir
+                cloud_url = cls.__clean_path(config.get(keys["cloud_url"])) or "localhost:19798"
+                lines.append(f"{increment_dir}#{source_dir}#{target_dir}#{cloud_type}#{cloud_path}#{cloud_url}")
+        return "\n".join(lines)
+
+    def __get_config_value(self, key: str, default: Any = None) -> Any:
+        return self._structured_config.get(key, default)
+
+    def __structured_form_rows(self) -> List[Dict[str, Any]]:
+        rows = []
+        for index in range(1, self._structured_conf_slots + 1):
+            rows.append(self.__structured_form_row(index))
+        return rows
+
+    def __structured_form_row(self, index: int) -> Dict[str, Any]:
+        keys = self.__slot_keys(index)
+        return {
+            'component': 'VCard',
+            'props': {
+                'variant': 'outlined',
+                'class': 'mb-3'
+            },
+            'content': [
+                {
+                    'component': 'VCardTitle',
+                    'text': f'配置行 {index}'
+                },
+                {
+                    'component': 'VCardText',
+                    'content': [
+                        {
+                            'component': 'VRow',
+                            'content': [
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': keys['enabled'], 'label': '启用本行'}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSelect', 'props': {'model': keys['scan_type'], 'label': '扫描来源', 'items': [{'title': 'CloudDrive2储存插件', 'value': 'cd2_storage'}, {'title': '本地增量目录', 'value': 'local'}]}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': keys['cd2_storage'], 'label': 'CloudDrive2储存名称', 'placeholder': 'CloudDrive储存', 'hint': '扫描来源=CloudDrive2储存插件时必填，填写MP里CloudDrive2储存插件显示的储存名称', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VTextField', 'props': {'model': keys['cd2_path'], 'label': 'CloudDrive2云盘目录', 'placeholder': '/甲骨文98py/未整理', 'hint': '扫描来源=CloudDrive2储存插件时必填；这是云盘内路径，不是容器本地路径，请直接输入/粘贴', 'persistent_hint': True}}]},
+                            ]
+                        },
+                        {
+                            'component': 'VRow',
+                            'content': [
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['local_increment_dir'], 'label': '本地增量目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/downloads/increment', 'hint': '扫描来源选择“本地增量目录”时填写', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['source_dir'], 'label': '监控目录 / 源文件映射目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': '这里就是原“监控目录”的第二段；STRM内容会按此路径或URL映射', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['target_dir'], 'label': '目的目录 / STRM输出目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/媒体库/STRM-AV/未整理'}}]},
+                            ]
+                        },
+                        {
+                            'component': 'VRow',
+                            'content': [
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSelect', 'props': {'model': keys['strm_type'], 'label': 'STRM写入方式', 'items': [{'title': '直写媒体服务器内源文件路径', 'value': 'direct'}, {'title': '生成 CloudDrive2 URL', 'value': 'cd2'}, {'title': '生成 Alist URL', 'value': 'alist'}]}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['library_dir'], 'label': '媒体服务器内源文件路径', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': 'STRM写入方式=直写时使用', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['cloud_path'], 'label': 'CD2/Alist挂载本地根路径', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': 'STRM写入方式=URL时使用；不填默认等于监控目录', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': keys['cloud_url'], 'label': 'CD2/Alist服务地址', 'placeholder': 'localhost:19798'}}]},
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+
     def get_api(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -627,11 +786,14 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             }
         ]
 
+    def browse_dir_api(self, path: str = Query(default="/", description="目录路径")) -> Dict[str, Any]:
+        """
+        浏览 MoviePilot 容器内本地目录，用于后续前端目录选择
+        """
+        return self.__browse_dir(path)
+
     @staticmethod
-    def browse_dir_api(path: str = Query(default="/", description="目录路径")) -> Dict[str, Any]:
-        """
-        浏览 MoviePilot 容器内本地目录，用于配置页下拉选择目录
-        """
+    def __browse_dir(path: str = "/") -> Dict[str, Any]:
         try:
             current_path = Path(path or "/")
             if not current_path.exists():
@@ -802,50 +964,15 @@ class CloudStrmIncrementSelfUse(_PluginBase):
                         ]
                     },
                     {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VSelect',
-                                        'props': {
-                                            'model': 'directory_browser_root',
-                                            'label': '目录下拉选择（容器根目录）',
-                                            'items': self.__directory_options('/'),
-                                            'clearable': True,
-                                            'hint': '先选择一个容器内目录，再复制到下面监控目录配置中使用',
-                                            'persistent_hint': True
-                                        }
-                                    }
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VCombobox',
-                                        'props': {
-                                            'model': 'directory_browser_current',
-                                            'label': '选择/输入目录',
-                                            'items': self.__directory_options('/'),
-                                            'clearable': True,
-                                            'hint': 'MoviePilot 后端表单不支持像自定义 Vue 那样逐级浏览，这里提供下拉+可输入辅助选择',
-                                            'persistent_hint': True
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
+                        'component': 'VAlert',
+                        'props': {
+                            'type': 'warning',
+                            'variant': 'tonal',
+                            'class': 'mb-3',
+                            'text': 'v1.2.0 已改为可视化配置行：下面每一行会直接生成并替代原 monitor_confs 监控目录配置。保存后插件运行只读取已启用的可视化配置行；旧版多行文本只保留兼容迁移，不再作为主要入口。'
+                        }
                     },
+                    *self.__structured_form_rows(),
                     {
                         'component': 'VRow',
                         'content': [
@@ -858,10 +985,11 @@ class CloudStrmIncrementSelfUse(_PluginBase):
                                     {
                                         'component': 'VTextarea',
                                         'props': {
-                                            'model': 'monitor_confs',
-                                            'label': '监控目录配置',
-                                            'rows': 5,
-                                            'placeholder': '增量目录#监控目录#目的目录#媒体服务器内源文件路径'
+                                            'model': 'generated_monitor_confs',
+                                            'label': '自动生成的监控目录配置（只读核对）',
+                                            'rows': 4,
+                                            'readonly': True,
+                                            'placeholder': '保存后这里会显示由上方可视化配置行自动生成的实际 monitor_confs；插件运行读取的就是这些配置行。'
                                         }
                                     }
                                 ]
@@ -979,8 +1107,8 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             "copy_files": False,
             "https": False,
             "monitor_confs": "",
-            "directory_browser_root": "/",
-            "directory_browser_current": "/",
+            "generated_monitor_confs": "",
+            **self.__structured_defaults(),
             "no_del_dirs": "",
             "rmt_mediaext": ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
         }
