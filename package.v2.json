@@ -73,13 +73,14 @@
   },
   "CloudStrmIncrementSelfUse": {
     "name": "云盘Strm生成（自用增量版）",
-    "description": "基于云盘Strm生成（增量版）自用修改，支持通过 MoviePilot CloudDrive2 储存插件扫描云盘目录生成 STRM，并将监控目录改为可视化配置行直接生成。",
+    "description": "基于云盘Strm生成（增量版）自用修改，支持通过 MoviePilot CloudDrive2 储存插件扫描云盘目录生成 STRM；配置页改为参考115网盘STRM助手的Vue弹窗逐级目录选择。",
     "labels": "云盘",
-    "version": "1.2.1",
+    "version": "1.3.0",
     "icon": "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/create.png",
     "author": "outxool（基于 thsrite 原版自用修改）",
     "level": 1,
     "history": {
+      "v1.3.0": "参考115网盘STRM助手改为 Vue 配置页：输入框右侧文件夹图标打开目录选择弹窗，支持进入下级、返回上级、选择当前目录。",
       "v1.2.1": "参考115网盘STRM助手的目录浏览体验，目录下拉改为有限深度递归展示多级目录，保留手动粘贴路径兜底，并简化配置提示。",
       "v1.2.0": "监控目录配置升级为可视化配置行：下拉/输入选择扫描来源、监控目录、目的目录和STRM写入方式，保存后直接生成并替代原 monitor_confs。",
       "v1.1.0": "配置页新增容器内目录下拉/可输入选择辅助项，并提供 /browse_dir API 供后续前端目录浏览使用。",
