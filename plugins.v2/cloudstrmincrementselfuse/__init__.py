@@ -29,7 +29,7 @@ class CloudStrmIncrementSelfUse(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/create.png"
     # 插件版本
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     # 插件作者
     plugin_author = "outxool（基于 thsrite 原版自用修改）"
     # 作者主页
@@ -63,6 +63,8 @@ class CloudStrmIncrementSelfUse(_PluginBase):
     _structured_conf_slots = 5
     _structured_config = {}
     _last_generated_monitor_confs = ""
+    _directory_option_depth = 3
+    _directory_option_max_items = 300
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -756,17 +758,17 @@ class CloudStrmIncrementSelfUse(_PluginBase):
                         {
                             'component': 'VRow',
                             'content': [
-                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['local_increment_dir'], 'label': '本地增量目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/downloads/increment', 'hint': '扫描来源选择“本地增量目录”时填写', 'persistent_hint': True}}]},
-                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['source_dir'], 'label': '监控目录 / 源文件映射目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': '这里就是原“监控目录”的第二段；STRM内容会按此路径或URL映射', 'persistent_hint': True}}]},
-                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['target_dir'], 'label': '目的目录 / STRM输出目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/媒体库/STRM-AV/未整理'}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['local_increment_dir'], 'label': '本地增量目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/downloads/increment', 'hint': '支持下拉选择多级目录；若列表没有目标目录，可直接粘贴完整路径', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['source_dir'], 'label': '监控目录 / 源文件映射目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': '原“监控目录”的第二段；支持下拉选择多级目录，也可直接粘贴完整路径', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['target_dir'], 'label': '目的目录 / STRM输出目录', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/媒体库/STRM-AV/未整理', 'hint': '支持下拉选择多级目录；若列表没有目标目录，可直接粘贴完整路径', 'persistent_hint': True}}]},
                             ]
                         },
                         {
                             'component': 'VRow',
                             'content': [
                                 {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSelect', 'props': {'model': keys['strm_type'], 'label': 'STRM写入方式', 'items': [{'title': '直写媒体服务器内源文件路径', 'value': 'direct'}, {'title': '生成 CloudDrive2 URL', 'value': 'cd2'}, {'title': '生成 Alist URL', 'value': 'alist'}]}}]},
-                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['library_dir'], 'label': '媒体服务器内源文件路径', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': 'STRM写入方式=直写时使用', 'persistent_hint': True}}]},
-                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['cloud_path'], 'label': 'CD2/Alist挂载本地根路径', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': 'STRM写入方式=URL时使用；不填默认等于监控目录', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['library_dir'], 'label': '媒体服务器内源文件路径', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': 'STRM写入方式=直写时使用；支持多级目录下拉或手动粘贴', 'persistent_hint': True}}]},
+                                {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VCombobox', 'props': {'model': keys['cloud_path'], 'label': 'CD2/Alist挂载本地根路径', 'items': self.__directory_options('/'), 'clearable': True, 'placeholder': '/115open/甲骨文98py/未整理', 'hint': 'STRM写入方式=URL时使用；不填默认等于监控目录；支持多级目录下拉或手动粘贴', 'persistent_hint': True}}]},
                                 {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': keys['cloud_url'], 'label': 'CD2/Alist服务地址', 'placeholder': 'localhost:19798'}}]},
                             ]
                         }
@@ -828,20 +830,55 @@ class CloudStrmIncrementSelfUse(_PluginBase):
             logger.error(f"浏览本地目录失败: {err}")
             return {"code": 1, "msg": f"浏览本地目录失败: {err}", "data": {"path": path, "items": []}}
 
-    @staticmethod
-    def __directory_options(root_path: str = "/") -> List[Dict[str, str]]:
+    @classmethod
+    def __directory_options(cls, root_path: str = "/") -> List[Dict[str, str]]:
         """
-        获取配置页下拉目录选项
+        获取配置页下拉目录选项。
+        参考 115网盘STRM助手的目录浏览体验，返回多级目录而不是只返回一级。
+        MoviePilot 后端表单没有真正的级联目录组件，这里采用“有限深度递归 + 可输入 Combobox”
+        的方式：常用二三级目录能直接下拉选择，超过范围时仍可手动粘贴路径。
         """
         try:
             root = Path(root_path or "/")
             if not root.exists() or not root.is_dir():
                 root = Path("/")
-            options = [{"title": str(root), "value": str(root)}]
-            for item in root.iterdir():
-                if item.is_dir():
-                    item_path = str(item)
-                    options.append({"title": item_path, "value": item_path})
+
+            options: List[Dict[str, str]] = []
+            seen = set()
+
+            def add_option(path: Path) -> None:
+                value = str(path)
+                if value in seen:
+                    return
+                seen.add(value)
+                options.append({"title": value, "value": value})
+
+            def walk_dir(path: Path, depth: int) -> None:
+                if len(options) >= cls._directory_option_max_items:
+                    return
+                add_option(path)
+                if depth <= 0:
+                    return
+                try:
+                    children = sorted(
+                        [item for item in path.iterdir() if item.is_dir()],
+                        key=lambda item: item.name.lower()
+                    )
+                except PermissionError:
+                    return
+                except OSError:
+                    return
+
+                for child in children:
+                    if child.name in {"proc", "sys", "dev", "run"} and str(child.parent) == "/":
+                        continue
+                    if child.name.startswith("."):
+                        continue
+                    walk_dir(child, depth - 1)
+                    if len(options) >= cls._directory_option_max_items:
+                        break
+
+            walk_dir(root, cls._directory_option_depth)
             return sorted(options, key=lambda x: x["title"].lower())
         except Exception as err:
             logger.error(f"获取目录下拉选项失败: {err}")
