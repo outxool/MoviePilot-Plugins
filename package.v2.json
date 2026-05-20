@@ -73,13 +73,14 @@
   },
   "CloudStrmIncrementSelfUse": {
     "name": "云盘Strm生成（自用增量版）",
-    "description": "基于云盘Strm生成（增量版）自用修改，支持通过 MoviePilot CloudDrive2 储存插件扫描云盘目录生成 STRM。",
+    "description": "基于云盘Strm生成（增量版）自用修改，支持通过 MoviePilot CloudDrive2 储存插件扫描云盘目录生成 STRM，并增加目录下拉选择辅助配置。",
     "labels": "云盘",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/outxool/moviepilot-plugins/main/icons/create.png",
     "author": "outxool（基于 thsrite 原版自用修改）",
     "level": 1,
     "history": {
+      "v1.1.0": "配置页新增容器内目录下拉/可输入选择辅助项，并提供 /browse_dir API 供后续前端目录浏览使用。",
       "v1.0.0": "自用版初始发布：保留原增量目录模式，新增 cd2_storage:// CloudDrive2 储存插件扫描模式。"
     }
   }
