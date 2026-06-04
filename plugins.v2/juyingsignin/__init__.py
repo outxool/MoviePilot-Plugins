@@ -186,32 +186,7 @@ class JuyingSignin(_PluginBase):
         return services
 
     def get_api(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "path": "/status",
-                "endpoint": self._get_status,
-                "methods": ["GET"],
-                "summary": "获取聚影签到状态",
-            },
-            {
-                "path": "/history",
-                "endpoint": self._get_history_api,
-                "methods": ["GET"],
-                "summary": "获取聚影签到历史",
-            },
-            {
-                "path": "/run_once",
-                "endpoint": self._run_once,
-                "methods": ["POST"],
-                "summary": "立即执行聚影签到",
-            },
-            {
-                "path": "/save_config",
-                "endpoint": self._save_config,
-                "methods": ["POST"],
-                "summary": "保存聚影签到配置",
-            },
-        ]
+        pass
 
     def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
         version = getattr(settings, "VERSION_FLAG", "v1")
@@ -1230,8 +1205,6 @@ class JuyingSignin(_PluginBase):
             "random_time_range": (config.get("random_time_range") or "").strip(),
             "retry_count": self._to_int(config.get("retry_count", 0), 0),
             "retry_interval": self._to_int(config.get("retry_interval", 5), 5),
-            "connect_timeout": self._to_int(config.get("connect_timeout", 10), 10),
-            "read_timeout": self._to_int(config.get("read_timeout", 30), 30),
         }
         self.update_config(new_config)
         self.init_plugin(new_config)
