@@ -23,11 +23,11 @@ class JuyingSignin(_PluginBase):
     # 插件图标
     plugin_icon = "https://s3.bmp.ovh/2026/05/05/TEY2AZ6K.png"
     # 插件版本
-    plugin_version = "1.2.0"
+    plugin_version = "1.0.0"
     # 插件作者
-    plugin_author = "sunxing"
+    plugin_author = "outxool"
     # 作者主页
-    author_url = "https://github.com"
+    author_url = "https://github.com/outxool"
     # 插件配置项ID前缀
     plugin_config_prefix = "juyingsignin_"
     # 加载顺序
@@ -186,7 +186,32 @@ class JuyingSignin(_PluginBase):
         return services
 
     def get_api(self) -> List[Dict[str, Any]]:
-        pass
+        return [
+            {
+                "path": "/status",
+                "endpoint": self._get_status,
+                "methods": ["GET"],
+                "summary": "获取聚影签到状态",
+            },
+            {
+                "path": "/history",
+                "endpoint": self._get_history_api,
+                "methods": ["GET"],
+                "summary": "获取聚影签到历史",
+            },
+            {
+                "path": "/run_once",
+                "endpoint": self._run_once,
+                "methods": ["POST"],
+                "summary": "立即执行聚影签到",
+            },
+            {
+                "path": "/save_config",
+                "endpoint": self._save_config,
+                "methods": ["POST"],
+                "summary": "保存聚影签到配置",
+            },
+        ]
 
     def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
         version = getattr(settings, "VERSION_FLAG", "v1")
@@ -1205,6 +1230,8 @@ class JuyingSignin(_PluginBase):
             "random_time_range": (config.get("random_time_range") or "").strip(),
             "retry_count": self._to_int(config.get("retry_count", 0), 0),
             "retry_interval": self._to_int(config.get("retry_interval", 5), 5),
+            "connect_timeout": self._to_int(config.get("connect_timeout", 10), 10),
+            "read_timeout": self._to_int(config.get("read_timeout", 30), 30),
         }
         self.update_config(new_config)
         self.init_plugin(new_config)
