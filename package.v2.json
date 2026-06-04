@@ -88,5 +88,17 @@
       "v1.1.0": "配置页新增容器内目录下拉/可输入选择辅助项，并提供 /browse_dir API 供后续前端目录浏览使用。",
       "v1.0.0": "自用版初始发布：保留原增量目录模式，新增 cd2_storage:// CloudDrive2 储存插件扫描模式。"
     }
+  },
+  "JuyingSignin": {
+    "name": "聚影签到",
+    "description": "聚影站点自动登录并执行每日签到。",
+    "labels": "签到,聚影",
+    "version": "1.0.0",
+    "icon": "https://s3.bmp.ovh/2026/05/05/TEY2AZ6K.png",
+    "author": "outxool",
+    "level": 1,
+    "history": {
+      "v1.0.0": "初版发布：支持聚影站点每日签到、随机延迟、失败重试、通知和历史记录。"
+    }
   }
 }
