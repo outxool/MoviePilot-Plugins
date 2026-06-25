@@ -34,11 +34,12 @@
     "name": "115整理入队桥接",
     "description": "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列，支持 CloudDrive2 路径映射、去重冷却、白名单目录过滤。",
     "labels": "整理,115,转存,桥接",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "outxool",
     "level": 1,
     "history": {
+      "v0.2.0": "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列。"
       "v0.1.0": "初始版本：轮询 DownloadHistory 按来源用户名匹配，去重后调用 TransferChain 入队整理。"
     }
   },
