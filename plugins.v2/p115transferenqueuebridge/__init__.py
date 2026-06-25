@@ -14,7 +14,7 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import FileItem
 
-from plugins.p115strmhelper.utils.storage_item import (
+from app.plugins.p115strmhelper.utils.storage_item import (
     resolve_directory_via_parent_list,
     resolve_file_via_parent_list,
 )
@@ -32,7 +32,7 @@ class P115TransferEnqueueBridge(_PluginBase):
     plugin_name = "115整理入队桥接"
     plugin_desc = "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.1"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
@@ -577,7 +577,7 @@ class P115TransferEnqueueBridge(_PluginBase):
 
         with self._share_transfer_hook_lock:
             try:
-                from plugins.p115strmhelper.service import servicer
+                from app.plugins.p115strmhelper.service import servicer
             except Exception as err:
                 logger.debug(f"【115整理桥接】暂无法导入 P115StrmHelper servicer，稍后重试: {err}")
                 return
@@ -663,7 +663,7 @@ class P115TransferEnqueueBridge(_PluginBase):
             return self._normalize_path(pan_path)
 
         try:
-            from plugins.p115strmhelper.core.config import configer
+            from app.plugins.p115strmhelper.core.config import configer
 
             paths = configer.share_recieve_paths or []
             if paths:
