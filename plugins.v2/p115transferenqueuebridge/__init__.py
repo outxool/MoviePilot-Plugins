@@ -1,5 +1,6 @@
 from pathlib import Path
-from time import time
+from threading import Lock, Thread
+from time import sleep, time
 from typing import Any, Dict, List, Optional, Tuple
 
 from apscheduler.triggers.cron import CronTrigger
@@ -23,14 +24,15 @@ class P115TransferEnqueueBridge(_PluginBase):
     """
     115 下载历史整理桥接插件
 
-    轮询 DownloadHistory 中指定来源用户的新记录
-    按 path 去重后直接调用 MoviePilot 原生 TransferChain.do_transfer
+    轮询 DownloadHistory 中指定来源用户的新记录，按 path 去重后直接调用 MoviePilot 原生 TransferChain.do_transfer。
+    可选包装 P115StrmHelper 分享转存成功回调，仅在分享转存成功后延迟做一次轻量差异检测并入队，
+    避免常驻扫描 115 目录。
     """
 
     plugin_name = "115整理入队桥接"
-    plugin_desc = "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列"
+    plugin_desc = "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.1.0"
+    plugin_version = "0.2.0"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
@@ -41,6 +43,8 @@ class P115TransferEnqueueBridge(_PluginBase):
     DEFAULT_INTERVAL = 120
     DEFAULT_DEBOUNCE_SECONDS = 300
     DEFAULT_HISTORY_LIMIT = 500
+    DEFAULT_SHARE_TRANSFER_DELAY = 30
+    DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS = 10
     RUNTIME_STATE_KEY = "runtime_state"
     RECENT_EVENTS_KEY = "recent_events"
     RECENT_EVENTS_LIMIT = 20
@@ -55,6 +59,11 @@ class P115TransferEnqueueBridge(_PluginBase):
     _dry_run: bool = False
     _clouddrive2_enabled: bool = True
     _clouddrive2_prefix: str = "/115open"
+    _share_transfer_hook_enabled: bool = False
+    _share_transfer_delay: int = DEFAULT_SHARE_TRANSFER_DELAY
+    _share_transfer_max_new_items: int = DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS
+    _share_transfer_hook_lock = Lock()
+    _share_transfer_hooked_helper: Any = None
     _transferchain: Optional[TransferChain] = None
     _storagechain: Optional[StorageChain] = None
 
@@ -82,6 +91,18 @@ class P115TransferEnqueueBridge(_PluginBase):
         self._dry_run = bool(config.get("dry_run", False))
         self._clouddrive2_enabled = bool(config.get("clouddrive2_enabled", True))
         self._clouddrive2_prefix = str(config.get("clouddrive2_prefix") or "/115open").strip() or "/115open"
+        self._share_transfer_hook_enabled = bool(config.get("share_transfer_hook_enabled", False))
+        self._share_transfer_delay = max(
+            self._safe_int(config.get("share_transfer_delay"), self.DEFAULT_SHARE_TRANSFER_DELAY),
+            0,
+        )
+        self._share_transfer_max_new_items = max(
+            self._safe_int(
+                config.get("share_transfer_max_new_items"),
+                self.DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS,
+            ),
+            1,
+        )
 
         self.update_config(
             {
@@ -94,16 +115,22 @@ class P115TransferEnqueueBridge(_PluginBase):
                 "dry_run": self._dry_run,
                 "clouddrive2_enabled": self._clouddrive2_enabled,
                 "clouddrive2_prefix": self._clouddrive2_prefix,
+                "share_transfer_hook_enabled": self._share_transfer_hook_enabled,
+                "share_transfer_delay": self._share_transfer_delay,
+                "share_transfer_max_new_items": self._share_transfer_max_new_items,
             }
         )
 
+        self._ensure_share_transfer_hook()
+
         logger.info(
-            "【115整理桥接】插件初始化完成 enabled=%s cron=%s interval=%s source_username=%s dry_run=%s",
+            "【115整理桥接】插件初始化完成 enabled=%s cron=%s interval=%s source_username=%s dry_run=%s share_transfer_hook=%s",
             self._enabled,
             self._cron or "<interval>",
             self._interval,
             self._source_username,
             self._dry_run,
+            self._share_transfer_hook_enabled,
         )
 
     def get_state(self) -> bool:
@@ -131,6 +158,8 @@ class P115TransferEnqueueBridge(_PluginBase):
         """
         if not self._enabled:
             return None
+
+        self._ensure_share_transfer_hook()
 
         trigger = self._build_trigger()
         if not trigger:
@@ -299,6 +328,52 @@ class P115TransferEnqueueBridge(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "share_transfer_hook_enabled",
+                                            "label": "桥接STRM助手分享转存",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "share_transfer_delay",
+                                            "label": "转存成功后延迟检测（秒）",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "share_transfer_max_new_items",
+                                            "label": "每次最多入队新增项",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
@@ -308,6 +383,8 @@ class P115TransferEnqueueBridge(_PluginBase):
                             "text": (
                                 "插件会轮询 DownloadHistory 中 source_username 对应的新记录，"
                                 "按 path 去重后调用 MoviePilot 原生整理队列。"
+                                "开启分享转存桥接后，仅包装115网盘STRM助手分享转存成功返回值，"
+                                "成功后延迟做一次目录差异检测，不做常驻目录扫描。"
                                 "Cron 优先于 interval，首次运行默认只建立游标，不自动回补历史记录。"
                             ),
                         },
@@ -324,6 +401,9 @@ class P115TransferEnqueueBridge(_PluginBase):
             "dry_run": False,
             "clouddrive2_enabled": True,
             "clouddrive2_prefix": "/115open",
+            "share_transfer_hook_enabled": False,
+            "share_transfer_delay": self.DEFAULT_SHARE_TRANSFER_DELAY,
+            "share_transfer_max_new_items": self.DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS,
         }
 
     def get_page(self) -> Optional[List[dict]]:
@@ -386,12 +466,14 @@ class P115TransferEnqueueBridge(_PluginBase):
         """
         停止插件服务
         """
-        pass
+        self._restore_share_transfer_hook()
 
     def poll_download_history(self):
         """
         轮询 DownloadHistory 并加入整理队列
         """
+        self._ensure_share_transfer_hook()
+
         try:
             records, table_info = self._fetch_recent_records()
         except Exception as err:
@@ -480,6 +562,306 @@ class P115TransferEnqueueBridge(_PluginBase):
             len(new_records),
             handled_count,
             skipped_count,
+        )
+
+    def _ensure_share_transfer_hook(self) -> None:
+        """
+        按需包装 P115StrmHelper 的分享转存函数。
+
+        该包装只读取 add_share_115 的成功返回值，不修改 STRM助手源码，不常驻扫描115目录。
+        成功后在后台线程延迟做一次目标目录差异检测，将新增直接子项加入原生整理队列。
+        """
+        if not self._enabled or not self._share_transfer_hook_enabled:
+            self._restore_share_transfer_hook()
+            return
+
+        with self._share_transfer_hook_lock:
+            try:
+                from plugins.p115strmhelper.service import servicer
+            except Exception as err:
+                logger.debug(f"【115整理桥接】暂无法导入 P115StrmHelper servicer，稍后重试: {err}")
+                return
+
+            helper = getattr(servicer, "sharetransferhelper", None)
+            if helper is None:
+                logger.debug("【115整理桥接】P115StrmHelper sharetransferhelper 尚未初始化，稍后重试")
+                return
+
+            current_func = getattr(helper, "add_share_115", None)
+            if current_func is None:
+                logger.warning("【115整理桥接】P115StrmHelper 未找到 add_share_115，无法桥接分享转存")
+                return
+
+            original_func = getattr(helper, "_p115_bridge_original_add_share_115", None)
+            if original_func is None:
+                original_func = current_func
+            elif getattr(helper, "_p115_bridge_owner", None) is self:
+                return
+
+            bridge = self
+
+            def wrapped_add_share_115(*args, **kwargs):
+                before_snapshot = bridge._snapshot_share_parent_before_transfer(args, kwargs)
+                result = original_func(*args, **kwargs)
+                bridge._schedule_share_transfer_enqueue(result, before_snapshot)
+                return result
+
+            setattr(helper, "add_share_115", wrapped_add_share_115)
+            setattr(helper, "_p115_bridge_original_add_share_115", original_func)
+            setattr(helper, "_p115_bridge_owner", self)
+            self._share_transfer_hooked_helper = helper
+            logger.info("【115整理桥接】已启用 P115StrmHelper 分享转存成功桥接")
+
+    def _restore_share_transfer_hook(self) -> None:
+        """
+        恢复被包装的 P115StrmHelper 分享转存函数。
+        """
+        with self._share_transfer_hook_lock:
+            helper = self._share_transfer_hooked_helper
+            if helper is None:
+                return
+            if getattr(helper, "_p115_bridge_owner", None) is not self:
+                self._share_transfer_hooked_helper = None
+                return
+            original_func = getattr(helper, "_p115_bridge_original_add_share_115", None)
+            if original_func is not None:
+                try:
+                    setattr(helper, "add_share_115", original_func)
+                    delattr(helper, "_p115_bridge_original_add_share_115")
+                    delattr(helper, "_p115_bridge_owner")
+                    logger.info("【115整理桥接】已恢复 P115StrmHelper 分享转存函数")
+                except Exception as err:
+                    logger.debug(f"【115整理桥接】恢复分享转存函数失败: {err}")
+            self._share_transfer_hooked_helper = None
+
+    def _snapshot_share_parent_before_transfer(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        分享转存前读取目标父目录的一层快照。
+        """
+        parent_path = self._extract_share_transfer_parent_path(args, kwargs)
+        if not parent_path:
+            return {"ok": False, "parent_path": "", "items": {}}
+        items = self._snapshot_share_parent(parent_path)
+        return {"ok": bool(items is not None), "parent_path": parent_path, "items": items or {}}
+
+    def _extract_share_transfer_parent_path(
+        self,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> str:
+        """
+        从 add_share_115 调用参数中推断本次分享转存目录。
+        """
+        pan_path = kwargs.get("pan_path")
+        if not pan_path and len(args) >= 6:
+            pan_path = args[5]
+        if pan_path:
+            return self._normalize_path(pan_path)
+
+        try:
+            from plugins.p115strmhelper.core.config import configer
+
+            paths = configer.share_recieve_paths or []
+            if paths:
+                return self._normalize_path(paths[0])
+        except Exception as err:
+            logger.debug(f"【115整理桥接】读取 P115StrmHelper 分享转存默认目录失败: {err}")
+        return ""
+
+    def _schedule_share_transfer_enqueue(
+        self,
+        result: Any,
+        before_snapshot: Dict[str, Any],
+    ) -> None:
+        """
+        分享转存成功后启动后台线程延迟检测新增项。
+        """
+        if not self._is_share_transfer_success(result):
+            return
+
+        result_parent_path = self._extract_share_transfer_parent_path_from_result(result)
+        parent_path = result_parent_path or str(before_snapshot.get("parent_path") or "")
+        if not parent_path:
+            self._record_recent_event("SHARE-SKIP", "-", "分享转存成功但无法确定转存目录")
+            return
+
+        if not before_snapshot.get("ok"):
+            self._record_recent_event(
+                "SHARE-SKIP",
+                parent_path,
+                "分享转存前快照失败，为避免误扫历史目录，本次不自动入队",
+            )
+            return
+
+        worker = Thread(
+            target=self._delayed_enqueue_share_transfer,
+            args=(parent_path, dict(before_snapshot.get("items") or {})),
+            name="P115TransferEnqueueBridge-ShareTransfer",
+            daemon=True,
+        )
+        worker.start()
+
+    @staticmethod
+    def _is_share_transfer_success(result: Any) -> bool:
+        """
+        判断 P115StrmHelper.add_share_115 返回值是否表示成功。
+        """
+        return isinstance(result, tuple) and len(result) >= 1 and bool(result[0])
+
+    def _extract_share_transfer_parent_path_from_result(self, result: Any) -> str:
+        """
+        从 P115StrmHelper.add_share_115 成功返回值中提取转存目录。
+        当前返回结构为 (True, file_mediainfo, parent_path, parent_id)。
+        """
+        if isinstance(result, tuple) and len(result) >= 3:
+            return self._normalize_path(result[2])
+        return ""
+
+    def _delayed_enqueue_share_transfer(
+        self,
+        parent_path: str,
+        before_items: Dict[str, str],
+    ) -> None:
+        """
+        延迟一次性检测分享转存目录新增子项并入队。
+        """
+        delay = max(self._share_transfer_delay, 0)
+        if delay:
+            sleep(delay)
+
+        after_items = self._snapshot_share_parent(parent_path)
+        if after_items is None:
+            self._record_recent_event("SHARE-ERROR", parent_path, "分享转存后快照失败")
+            return
+
+        new_paths = [path for path in after_items.keys() if path not in before_items]
+        if not new_paths:
+            self._record_recent_event("SHARE-SKIP", parent_path, "分享转存成功但未检测到新增子项")
+            return
+
+        if len(new_paths) > self._share_transfer_max_new_items:
+            self._record_recent_event(
+                "SHARE-SKIP",
+                parent_path,
+                f"检测到新增项 {len(new_paths)} 个，超过上限 {self._share_transfer_max_new_items}，为避免误入队已跳过",
+            )
+            return
+
+        path_cache = {}
+        try:
+            runtime_state = self._load_runtime_state()
+            path_cache = runtime_state.get("path_cache") or {}
+        except Exception:
+            runtime_state = {"path_cache": {}}
+
+        now_ts = int(time())
+        enqueued = 0
+        skipped = 0
+        for path in sorted(new_paths):
+            normalized_path = self._normalize_path(path)
+            if not normalized_path:
+                skipped += 1
+                continue
+            if not self._is_path_allowed(Path(normalized_path)):
+                skipped += 1
+                self._record_recent_event("SHARE-SKIP", normalized_path, "路径不在允许根目录内")
+                continue
+            if not self._should_process_path(normalized_path, path_cache, now_ts):
+                skipped += 1
+                self._record_recent_event("SHARE-SKIP", normalized_path, "仍处于去重冷却中")
+                continue
+            if self._enqueue_path(normalized_path):
+                enqueued += 1
+                path_cache[normalized_path] = now_ts
+            else:
+                skipped += 1
+
+        runtime_state["path_cache"] = self._trim_path_cache(path_cache, now_ts)
+        self._save_runtime_state(runtime_state)
+        self._record_recent_event(
+            "SHARE-DONE",
+            parent_path,
+            f"分享转存新增项处理完成 新增={len(new_paths)} 入队={enqueued} 跳过={skipped}",
+        )
+
+    def _snapshot_share_parent(self, parent_path: str) -> Optional[Dict[str, str]]:
+        """
+        读取分享转存父目录的一层子项快照。
+        返回 source-path 风格路径到签名的映射；失败返回 None。
+        """
+        if not self._clouddrive2_enabled:
+            return self._snapshot_local_parent(parent_path)
+
+        parent_item = self._build_clouddrive2_file_item(parent_path)
+        if not parent_item:
+            logger.warning("【115整理桥接】分享转存父目录无法解析: %s", parent_path)
+            return None
+
+        storagechain = self._storagechain or StorageChain()
+        try:
+            entries = storagechain.list_files(parent_item) or []
+        except Exception as err:
+            logger.error(f"【115整理桥接】分享转存目录 list_files 失败: {parent_path} - {err}", exc_info=True)
+            return None
+
+        snapshot: Dict[str, str] = {}
+        normalized_parent = self._normalize_path(parent_path)
+        for entry in entries:
+            child_path = (Path(normalized_parent) / str(entry.name or "")).as_posix()
+            if not entry.name:
+                entry_path = str(getattr(entry, "path", "") or "")
+                child_path = self._cloud_path_to_source_path(entry_path) or child_path
+            snapshot[self._normalize_path(child_path)] = self._file_item_signature(entry)
+        return snapshot
+
+    def _snapshot_local_parent(self, parent_path: str) -> Optional[Dict[str, str]]:
+        """
+        本地路径模式的一层子项快照。
+        """
+        path_obj = Path(parent_path)
+        if not path_obj.exists() or not path_obj.is_dir():
+            return None
+        snapshot: Dict[str, str] = {}
+        try:
+            for child in path_obj.iterdir():
+                stat_result = child.stat()
+                snapshot[self._normalize_path(child)] = f"{child.name}|{'dir' if child.is_dir() else 'file'}|{stat_result.st_size}|{stat_result.st_mtime}"
+        except Exception as err:
+            logger.error(f"【115整理桥接】本地分享转存目录快照失败: {parent_path} - {err}", exc_info=True)
+            return None
+        return snapshot
+
+    def _cloud_path_to_source_path(self, cloud_path: str) -> str:
+        """
+        将 CloudDrive2 路径还原为115网盘源路径。
+        """
+        normalized_cloud_path = self._normalize_path(cloud_path)
+        normalized_prefix = self._normalize_path(self._clouddrive2_prefix)
+        if not normalized_cloud_path or not normalized_prefix:
+            return ""
+        if normalized_cloud_path == normalized_prefix:
+            return "/"
+        prefix_with_slash = normalized_prefix.rstrip("/") + "/"
+        if normalized_cloud_path.startswith(prefix_with_slash):
+            return "/" + normalized_cloud_path[len(prefix_with_slash):].lstrip("/")
+        return normalized_cloud_path
+
+    @staticmethod
+    def _file_item_signature(file_item: FileItem) -> str:
+        """
+        构造轻量快照签名。
+        """
+        return "|".join(
+            [
+                str(getattr(file_item, "name", "") or ""),
+                str(getattr(file_item, "type", "") or ""),
+                str(getattr(file_item, "size", "") or ""),
+                str(getattr(file_item, "modify_time", "") or ""),
+            ]
         )
 
     def _build_trigger(self):
