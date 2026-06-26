@@ -25,14 +25,14 @@ class P115TransferEnqueueBridge(_PluginBase):
     115 下载历史整理桥接插件
 
     轮询 DownloadHistory 中指定来源用户的新记录，按 path 去重后直接调用 MoviePilot 原生 TransferChain.do_transfer。
-    可选包装 P115StrmHelper 分享转存成功回调，仅在分享转存成功后延迟做一次轻量差异检测并入队，
-    避免常驻扫描 115 目录。
+    可选包装 P115StrmHelper 分享转存成功回调，优先根据分享链接顶层项目构造候选路径入队，
+    仅在候选路径解析失败时才降级为一次性目录差异检测，避免常驻扫描 115 目录。
     """
 
     plugin_name = "115整理入队桥接"
     plugin_desc = "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.2.1"
+    plugin_version = "0.2.2"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
@@ -384,7 +384,7 @@ class P115TransferEnqueueBridge(_PluginBase):
                                 "插件会轮询 DownloadHistory 中 source_username 对应的新记录，"
                                 "按 path 去重后调用 MoviePilot 原生整理队列。"
                                 "开启分享转存桥接后，仅包装115网盘STRM助手分享转存成功返回值，"
-                                "成功后延迟做一次目录差异检测，不做常驻目录扫描。"
+                                "成功后优先按分享链接顶层项目构造候选路径入队，候选解析失败时才降级为一次目录差异检测，不做常驻目录扫描。"
                                 "Cron 优先于 interval，首次运行默认只建立游标，不自动回补历史记录。"
                             ),
                         },
@@ -569,7 +569,7 @@ class P115TransferEnqueueBridge(_PluginBase):
         按需包装 P115StrmHelper 的分享转存函数。
 
         该包装只读取 add_share_115 的成功返回值，不修改 STRM助手源码，不常驻扫描115目录。
-        成功后在后台线程延迟做一次目标目录差异检测，将新增直接子项加入原生整理队列。
+        成功后在后台线程延迟处理候选路径；优先按分享链接顶层项目入队，失败时才降级为目录差异检测。
         """
         if not self._enabled or not self._share_transfer_hook_enabled:
             self._restore_share_transfer_hook()
@@ -601,9 +601,9 @@ class P115TransferEnqueueBridge(_PluginBase):
             bridge = self
 
             def wrapped_add_share_115(*args, **kwargs):
-                before_snapshot = bridge._snapshot_share_parent_before_transfer(args, kwargs)
+                share_context = bridge._prepare_share_transfer_context(helper, args, kwargs)
                 result = original_func(*args, **kwargs)
-                bridge._schedule_share_transfer_enqueue(result, before_snapshot)
+                bridge._schedule_share_transfer_enqueue(result, share_context)
                 return result
 
             setattr(helper, "add_share_115", wrapped_add_share_115)
@@ -634,19 +634,57 @@ class P115TransferEnqueueBridge(_PluginBase):
                     logger.debug(f"【115整理桥接】恢复分享转存函数失败: {err}")
             self._share_transfer_hooked_helper = None
 
-    def _snapshot_share_parent_before_transfer(
+    def _prepare_share_transfer_context(
         self,
+        helper: Any,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        分享转存前读取目标父目录的一层快照。
+        分享转存前准备桥接上下文。
+
+        v0.2.2 起优先读取分享链接根目录顶层项目名，构造 parent_path/item_name 候选路径。
+        这样即使 115 将内容合并到已存在目录，或 CloudDrive2 父目录列表缓存未刷新，也能按本次分享内容入队。
+        只有候选路径解析失败时，才保留 v0.2.1 的父目录一层快照作为兜底。
         """
         parent_path = self._extract_share_transfer_parent_path(args, kwargs)
-        if not parent_path:
-            return {"ok": False, "parent_path": "", "items": {}}
-        items = self._snapshot_share_parent(parent_path)
-        return {"ok": bool(items is not None), "parent_path": parent_path, "items": items or {}}
+        share_url = self._extract_share_transfer_url(args, kwargs)
+        candidate_paths: List[str] = []
+
+        if parent_path and share_url:
+            candidate_paths = self._extract_share_root_candidate_paths(
+                helper=helper,
+                share_url=share_url,
+                parent_path=parent_path,
+            )
+
+        before_items: Dict[str, str] = {}
+        snapshot_ok = False
+        if parent_path and not candidate_paths:
+            items = self._snapshot_share_parent(parent_path)
+            snapshot_ok = bool(items is not None)
+            before_items = items or {}
+
+        return {
+            "parent_path": parent_path,
+            "share_url": share_url,
+            "candidate_paths": candidate_paths,
+            "snapshot_ok": snapshot_ok,
+            "before_items": before_items,
+        }
+
+    @staticmethod
+    def _extract_share_transfer_url(
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> str:
+        """
+        从 add_share_115 调用参数中提取分享链接。
+        """
+        url = kwargs.get("url")
+        if not url and args:
+            url = args[0]
+        return str(url or "").strip()
 
     def _extract_share_transfer_parent_path(
         self,
@@ -672,34 +710,115 @@ class P115TransferEnqueueBridge(_PluginBase):
             logger.debug(f"【115整理桥接】读取 P115StrmHelper 分享转存默认目录失败: {err}")
         return ""
 
+    def _extract_share_root_candidate_paths(
+        self,
+        helper: Any,
+        share_url: str,
+        parent_path: str,
+    ) -> List[str]:
+        """
+        读取分享链接根目录顶层项目名，构造本次转存成功后的候选入队路径。
+        """
+        normalized_parent = self._normalize_path(parent_path)
+        if not share_url or not normalized_parent:
+            return []
+
+        try:
+            data = helper.share_url_extract(share_url)
+            share_code = data.get("share_code")
+            receive_code = data.get("receive_code")
+        except Exception as err:
+            logger.debug(f"【115整理桥接】解析分享链接候选路径失败: {err}")
+            return []
+
+        if not share_code or not receive_code:
+            logger.debug("【115整理桥接】分享链接缺少 share_code/receive_code，无法构造候选路径")
+            return []
+
+        try:
+            from app.plugins.p115strmhelper.core.config import configer
+            from p115client.tool.iterdir import share_iterdir
+
+            client = getattr(helper, "client", None)
+            if client is None:
+                logger.debug("【115整理桥接】P115StrmHelper helper.client 为空，无法读取分享顶层项目")
+                return []
+
+            candidate_paths: List[str] = []
+            for item in share_iterdir(
+                client,
+                receive_code=receive_code,
+                share_code=share_code,
+                cid=0,
+                app="web",
+                **configer.get_ios_ua_app(app=False),
+            ):
+                item_name = str(item.get("name") or "").strip()
+                if not item_name:
+                    continue
+                candidate_paths.append(self._normalize_path(Path(normalized_parent) / item_name))
+                if len(candidate_paths) >= self._share_transfer_max_new_items:
+                    break
+
+            if candidate_paths:
+                logger.info(
+                    "【115整理桥接】分享转存候选路径解析完成 parent=%s candidates=%s",
+                    normalized_parent,
+                    len(candidate_paths),
+                )
+            else:
+                logger.debug("【115整理桥接】分享链接顶层项目为空，无法构造候选路径")
+            return candidate_paths
+        except Exception as err:
+            logger.warning(f"【115整理桥接】读取分享链接顶层项目失败，将降级目录差异检测: {err}", exc_info=True)
+            return []
+
     def _schedule_share_transfer_enqueue(
         self,
         result: Any,
-        before_snapshot: Dict[str, Any],
+        share_context: Dict[str, Any],
     ) -> None:
         """
-        分享转存成功后启动后台线程延迟检测新增项。
+        分享转存成功后启动后台线程延迟处理候选路径或兜底目录差异。
         """
         if not self._is_share_transfer_success(result):
             return
 
         result_parent_path = self._extract_share_transfer_parent_path_from_result(result)
-        parent_path = result_parent_path or str(before_snapshot.get("parent_path") or "")
+        parent_path = result_parent_path or str(share_context.get("parent_path") or "")
+        parent_path = self._normalize_path(parent_path)
         if not parent_path:
             self._record_recent_event("SHARE-SKIP", "-", "分享转存成功但无法确定转存目录")
             return
 
-        if not before_snapshot.get("ok"):
+        candidate_paths = [
+            self._normalize_path(path)
+            for path in (share_context.get("candidate_paths") or [])
+            if self._normalize_path(path)
+        ]
+        if result_parent_path and candidate_paths:
+            context_parent = self._normalize_path(str(share_context.get("parent_path") or ""))
+            if context_parent and context_parent != parent_path:
+                candidate_paths = [
+                    self._normalize_path(Path(parent_path) / Path(path).name)
+                    for path in candidate_paths
+                    if Path(path).name
+                ]
+
+        snapshot_ok = bool(share_context.get("snapshot_ok"))
+        before_items = dict(share_context.get("before_items") or {})
+
+        if not candidate_paths and not snapshot_ok:
             self._record_recent_event(
                 "SHARE-SKIP",
                 parent_path,
-                "分享转存前快照失败，为避免误扫历史目录，本次不自动入队",
+                "分享转存成功但候选路径解析失败，且转存前快照失败，为避免误扫历史目录，本次不自动入队",
             )
             return
 
         worker = Thread(
             target=self._delayed_enqueue_share_transfer,
-            args=(parent_path, dict(before_snapshot.get("items") or {})),
+            args=(parent_path, candidate_paths, before_items),
             name="P115TransferEnqueueBridge-ShareTransfer",
             daemon=True,
         )
@@ -724,30 +843,48 @@ class P115TransferEnqueueBridge(_PluginBase):
     def _delayed_enqueue_share_transfer(
         self,
         parent_path: str,
+        candidate_paths: List[str],
         before_items: Dict[str, str],
     ) -> None:
         """
-        延迟一次性检测分享转存目录新增子项并入队。
+        延迟处理分享转存入队。
+
+        优先处理分享链接顶层候选路径；候选路径为空时，降级为 v0.2.1 的父目录一层差异检测。
         """
         delay = max(self._share_transfer_delay, 0)
         if delay:
             sleep(delay)
 
-        after_items = self._snapshot_share_parent(parent_path)
-        if after_items is None:
-            self._record_recent_event("SHARE-ERROR", parent_path, "分享转存后快照失败")
-            return
+        target_paths = [self._normalize_path(path) for path in candidate_paths if self._normalize_path(path)]
+        detection_mode = "candidate"
 
-        new_paths = [path for path in after_items.keys() if path not in before_items]
-        if not new_paths:
-            self._record_recent_event("SHARE-SKIP", parent_path, "分享转存成功但未检测到新增子项")
-            return
+        if not target_paths:
+            after_items = self._snapshot_share_parent(parent_path)
+            if after_items is None:
+                self._record_recent_event("SHARE-ERROR", parent_path, "分享转存后快照失败")
+                return
 
-        if len(new_paths) > self._share_transfer_max_new_items:
+            target_paths = [path for path in after_items.keys() if path not in before_items]
+            detection_mode = "snapshot"
+            if not target_paths:
+                self._record_recent_event("SHARE-SKIP", parent_path, "分享转存成功但未检测到新增子项")
+                return
+
+        # 去重并保持顺序，避免分享接口重复返回同名路径。
+        deduped_paths: List[str] = []
+        seen_paths = set()
+        for path in target_paths:
+            normalized_path = self._normalize_path(path)
+            if not normalized_path or normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            deduped_paths.append(normalized_path)
+
+        if len(deduped_paths) > self._share_transfer_max_new_items:
             self._record_recent_event(
                 "SHARE-SKIP",
                 parent_path,
-                f"检测到新增项 {len(new_paths)} 个，超过上限 {self._share_transfer_max_new_items}，为避免误入队已跳过",
+                f"检测到待入队项 {len(deduped_paths)} 个，超过上限 {self._share_transfer_max_new_items}，为避免误入队已跳过",
             )
             return
 
@@ -761,7 +898,7 @@ class P115TransferEnqueueBridge(_PluginBase):
         now_ts = int(time())
         enqueued = 0
         skipped = 0
-        for path in sorted(new_paths):
+        for path in deduped_paths:
             normalized_path = self._normalize_path(path)
             if not normalized_path:
                 skipped += 1
@@ -777,6 +914,7 @@ class P115TransferEnqueueBridge(_PluginBase):
             if self._enqueue_path(normalized_path):
                 enqueued += 1
                 path_cache[normalized_path] = now_ts
+                self._record_recent_event("SHARE-ENQUEUE", normalized_path, f"分享转存候选路径已入队 mode={detection_mode}")
             else:
                 skipped += 1
 
@@ -785,7 +923,7 @@ class P115TransferEnqueueBridge(_PluginBase):
         self._record_recent_event(
             "SHARE-DONE",
             parent_path,
-            f"分享转存新增项处理完成 新增={len(new_paths)} 入队={enqueued} 跳过={skipped}",
+            f"分享转存处理完成 mode={detection_mode} 待处理={len(deduped_paths)} 入队={enqueued} 跳过={skipped}",
         )
 
     def _snapshot_share_parent(self, parent_path: str) -> Optional[Dict[str, str]]:
