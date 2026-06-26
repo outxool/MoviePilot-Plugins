@@ -34,11 +34,12 @@
     "name": "115整理入队桥接",
     "description": "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列，支持 CloudDrive2 路径映射、去重冷却、白名单目录过滤。",
     "labels": "整理,115,转存,桥接",
-    "version": "0.2.2",
+    "version": "0.2.4",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "outxool",
     "level": 1,
     "history": {
+      "v0.2.4": "桥接插件配置页新增「分享转存候选兜底根目录」，默认 /最近接收。以后你可以在桥接插件里自己填多个兜底目录，原候选路径解析失败时会用“分享顶层项目名”依次拼接这些根目录自动尝试入队。",
       "v0.2.2": "分享转存成功后优先读取分享链接顶层项目名，构造 parent_path/item_name 候选路径入队；候选解析失败时才降级到旧的一层目录快照差集。不做常驻目录扫描。",
       "v0.2.1": "修复115网盘STRM助手分享转存到原生整理队列。",
       "v0.2.0": "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列。",
