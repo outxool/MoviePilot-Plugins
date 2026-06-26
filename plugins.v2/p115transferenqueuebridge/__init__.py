@@ -32,7 +32,7 @@ class P115TransferEnqueueBridge(_PluginBase):
     plugin_name = "115整理入队桥接"
     plugin_desc = "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.2.2"
+    plugin_version = "0.2.4"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
@@ -45,6 +45,7 @@ class P115TransferEnqueueBridge(_PluginBase):
     DEFAULT_HISTORY_LIMIT = 500
     DEFAULT_SHARE_TRANSFER_DELAY = 30
     DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS = 10
+    DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS = ["/最近接收"]
     RUNTIME_STATE_KEY = "runtime_state"
     RECENT_EVENTS_KEY = "recent_events"
     RECENT_EVENTS_LIMIT = 20
@@ -62,6 +63,8 @@ class P115TransferEnqueueBridge(_PluginBase):
     _share_transfer_hook_enabled: bool = False
     _share_transfer_delay: int = DEFAULT_SHARE_TRANSFER_DELAY
     _share_transfer_max_new_items: int = DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS
+    _share_transfer_fallback_roots_text: str = ""
+    _share_transfer_fallback_roots: List[Path] = []
     _share_transfer_hook_lock = Lock()
     _share_transfer_hooked_helper: Any = None
     _transferchain: Optional[TransferChain] = None
@@ -103,6 +106,10 @@ class P115TransferEnqueueBridge(_PluginBase):
             ),
             1,
         )
+        self._share_transfer_fallback_roots_text = str(
+            config.get("share_transfer_fallback_roots") or "\n".join(self.DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS)
+        ).strip()
+        self._share_transfer_fallback_roots = self._parse_allowed_roots(self._share_transfer_fallback_roots_text)
 
         self.update_config(
             {
@@ -118,6 +125,7 @@ class P115TransferEnqueueBridge(_PluginBase):
                 "share_transfer_hook_enabled": self._share_transfer_hook_enabled,
                 "share_transfer_delay": self._share_transfer_delay,
                 "share_transfer_max_new_items": self._share_transfer_max_new_items,
+                "share_transfer_fallback_roots": self._share_transfer_fallback_roots_text,
             }
         )
 
@@ -374,6 +382,26 @@ class P115TransferEnqueueBridge(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "share_transfer_fallback_roots",
+                                            "label": "分享转存候选兜底根目录",
+                                            "rows": 3,
+                                            "placeholder": "/最近接收\n/网盘整理/分享转存目录\n候选路径解析失败时，会用分享顶层项目名依次拼接这些根目录再尝试入队",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
@@ -384,7 +412,7 @@ class P115TransferEnqueueBridge(_PluginBase):
                                 "插件会轮询 DownloadHistory 中 source_username 对应的新记录，"
                                 "按 path 去重后调用 MoviePilot 原生整理队列。"
                                 "开启分享转存桥接后，仅包装115网盘STRM助手分享转存成功返回值，"
-                                "成功后优先按分享链接顶层项目构造候选路径入队，候选解析失败时才降级为一次目录差异检测，不做常驻目录扫描。"
+                                "成功后优先按分享链接顶层项目构造候选路径入队；原候选解析失败时会尝试“分享转存候选兜底根目录”；仍失败时才降级为一次目录差异检测，不做常驻目录扫描。"
                                 "Cron 优先于 interval，首次运行默认只建立游标，不自动回补历史记录。"
                             ),
                         },
@@ -404,6 +432,7 @@ class P115TransferEnqueueBridge(_PluginBase):
             "share_transfer_hook_enabled": False,
             "share_transfer_delay": self.DEFAULT_SHARE_TRANSFER_DELAY,
             "share_transfer_max_new_items": self.DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS,
+            "share_transfer_fallback_roots": "\n".join(self.DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS),
         }
 
     def get_page(self) -> Optional[List[dict]]:
@@ -915,7 +944,28 @@ class P115TransferEnqueueBridge(_PluginBase):
                 enqueued += 1
                 path_cache[normalized_path] = now_ts
                 self._record_recent_event("SHARE-ENQUEUE", normalized_path, f"分享转存候选路径已入队 mode={detection_mode}")
-            else:
+                continue
+
+            fallback_enqueued = False
+            if detection_mode == "candidate":
+                for fallback_path in self._build_share_candidate_fallback_paths(normalized_path, parent_path):
+                    if not self._is_path_allowed(Path(fallback_path)):
+                        self._record_recent_event("SHARE-SKIP", fallback_path, "候选兜底路径不在允许根目录内")
+                        continue
+                    if not self._should_process_path(fallback_path, path_cache, now_ts):
+                        self._record_recent_event("SHARE-SKIP", fallback_path, "候选兜底路径仍处于去重冷却中")
+                        continue
+                    if self._enqueue_path(fallback_path):
+                        enqueued += 1
+                        path_cache[fallback_path] = now_ts
+                        fallback_enqueued = True
+                        self._record_recent_event(
+                            "SHARE-ENQUEUE",
+                            fallback_path,
+                            f"原候选路径解析失败，已用兜底路径入队 original={normalized_path}",
+                        )
+                        break
+            if not fallback_enqueued:
                 skipped += 1
 
         runtime_state["path_cache"] = self._trim_path_cache(path_cache, now_ts)
@@ -925,6 +975,53 @@ class P115TransferEnqueueBridge(_PluginBase):
             parent_path,
             f"分享转存处理完成 mode={detection_mode} 待处理={len(deduped_paths)} 入队={enqueued} 跳过={skipped}",
         )
+
+    def _build_share_candidate_fallback_paths(self, original_path: str, parent_path: str) -> List[str]:
+        """
+        当 STRM助手返回的 parent_path 与 115/CloudDrive2 实际可见接收目录不一致时，
+        用同一个分享顶层项目名在备用根目录下再尝试一次。
+
+        典型场景：STRM助手日志/返回仍显示 /网盘整理/分享转存目录，
+        但 CloudDrive2 实际可解析路径在 /最近接收/片名。
+        """
+        item_name = Path(self._normalize_path(original_path)).name
+        if not item_name:
+            return []
+
+        roots: List[str] = []
+        configured_roots = self._share_transfer_fallback_roots or self._parse_allowed_roots(
+            "\n".join(self.DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS)
+        )
+        for root in configured_roots:
+            normalized_root = self._normalize_path(root)
+            if normalized_root and normalized_root not in roots:
+                roots.append(normalized_root)
+
+        try:
+            from app.plugins.p115strmhelper.core.config import configer
+
+            for root in configer.share_recieve_paths or []:
+                normalized_root = self._normalize_path(root)
+                if normalized_root and normalized_root not in roots:
+                    roots.append(normalized_root)
+        except Exception as err:
+            logger.debug(f"【115整理桥接】读取分享接收目录兜底列表失败: {err}")
+
+        normalized_parent = self._normalize_path(parent_path)
+        fallback_paths: List[str] = []
+        for root in roots:
+            if not root or root == normalized_parent:
+                continue
+            fallback_path = self._normalize_path(Path(root) / item_name)
+            if fallback_path and fallback_path != self._normalize_path(original_path) and fallback_path not in fallback_paths:
+                fallback_paths.append(fallback_path)
+        if fallback_paths:
+            logger.info(
+                "【115整理桥接】候选路径解析失败时将尝试兜底路径 original=%s fallbacks=%s",
+                original_path,
+                fallback_paths,
+            )
+        return fallback_paths
 
     def _snapshot_share_parent(self, parent_path: str) -> Optional[Dict[str, str]]:
         """
