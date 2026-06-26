@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
 from time import sleep, time
@@ -8,11 +9,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import inspect, text
 
 from app.chain.storage import StorageChain
+from app.core.event import Event, eventmanager
 from app.chain.transfer import TransferChain
 from app.db import SessionFactory
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import FileItem
+from app.schemas.types import EventType
 
 from app.plugins.p115strmhelper.utils.storage_item import (
     resolve_directory_via_parent_list,
@@ -25,14 +28,14 @@ class P115TransferEnqueueBridge(_PluginBase):
     115 下载历史整理桥接插件
 
     轮询 DownloadHistory 中指定来源用户的新记录，按 path 去重后直接调用 MoviePilot 原生 TransferChain.do_transfer。
-    可选包装 P115StrmHelper 分享转存成功回调，优先根据分享链接顶层项目构造候选路径入队，
-    仅在候选路径解析失败时才降级为一次性目录差异检测，避免常驻扫描 115 目录。
+    可选包装 P115StrmHelper 分享转存成功回调；成功后直接把配置目录加入原生整理队列。
+    支持手动立即运行、定时补漏、中文状态、可读时间和运行统计。
     """
 
     plugin_name = "115整理入队桥接"
-    plugin_desc = "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列"
+    plugin_desc = "轮询115下载历史，分享转存成功后自动入队配置目录"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.2.4"
+    plugin_version = "0.3.0"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
@@ -44,11 +47,26 @@ class P115TransferEnqueueBridge(_PluginBase):
     DEFAULT_DEBOUNCE_SECONDS = 300
     DEFAULT_HISTORY_LIMIT = 500
     DEFAULT_SHARE_TRANSFER_DELAY = 30
-    DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS = 10
-    DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS = ["/最近接收"]
+    DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS = ["/最近接收"]
+    DEFAULT_RECENT_EVENTS_LIMIT = 50
     RUNTIME_STATE_KEY = "runtime_state"
     RECENT_EVENTS_KEY = "recent_events"
-    RECENT_EVENTS_LIMIT = 20
+    STATUS_TEXT_MAP = {
+        "ENQUEUE": "✅ 已入队",
+        "SHARE-ENQUEUE": "✅ 已入队",
+        "DRYRUN": "🧪 演练",
+        "DONE": "✅ 已完成",
+        "SHARE-DONE": "✅ 已完成",
+        "SKIP": "⚠️ 已跳过",
+        "SHARE-SKIP": "⚠️ 已跳过",
+        "ERROR": "❌ 错误",
+        "SHARE-ERROR": "❌ 错误",
+        "INFO": "ℹ️ 信息",
+        "CURSOR": "🔰 游标",
+        "MANUAL": "🖱️ 手动",
+        "CACHE": "🧹 缓存",
+        "SCHEDULE": "⏰ 定时",
+    }
 
     _enabled: bool = False
     _cron: str = ""
@@ -62,10 +80,13 @@ class P115TransferEnqueueBridge(_PluginBase):
     _clouddrive2_prefix: str = "/115open"
     _share_transfer_hook_enabled: bool = False
     _share_transfer_delay: int = DEFAULT_SHARE_TRANSFER_DELAY
-    _share_transfer_max_new_items: int = DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS
-    _share_transfer_fallback_roots_text: str = ""
-    _share_transfer_fallback_roots: List[Path] = []
+    _share_transfer_enqueue_roots_text: str = ""
+    _share_transfer_enqueue_roots: List[Path] = []
+    _share_roots_schedule_enabled: bool = False
+    _share_roots_schedule_cron: str = ""
+    _recent_events_limit: int = DEFAULT_RECENT_EVENTS_LIMIT
     _share_transfer_hook_lock = Lock()
+    _runtime_lock = Lock()
     _share_transfer_hooked_helper: Any = None
     _transferchain: Optional[TransferChain] = None
     _storagechain: Optional[StorageChain] = None
@@ -99,17 +120,18 @@ class P115TransferEnqueueBridge(_PluginBase):
             self._safe_int(config.get("share_transfer_delay"), self.DEFAULT_SHARE_TRANSFER_DELAY),
             0,
         )
-        self._share_transfer_max_new_items = max(
-            self._safe_int(
-                config.get("share_transfer_max_new_items"),
-                self.DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS,
-            ),
-            1,
-        )
-        self._share_transfer_fallback_roots_text = str(
-            config.get("share_transfer_fallback_roots") or "\n".join(self.DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS)
+        self._share_transfer_enqueue_roots_text = str(
+            config.get("share_transfer_enqueue_roots")
+            or config.get("share_transfer_fallback_roots")
+            or "\n".join(self.DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS)
         ).strip()
-        self._share_transfer_fallback_roots = self._parse_allowed_roots(self._share_transfer_fallback_roots_text)
+        self._share_transfer_enqueue_roots = self._parse_allowed_roots(self._share_transfer_enqueue_roots_text)
+        self._share_roots_schedule_enabled = bool(config.get("share_roots_schedule_enabled", False))
+        self._share_roots_schedule_cron = str(config.get("share_roots_schedule_cron") or "").strip()
+        self._recent_events_limit = max(
+            self._safe_int(config.get("recent_events_limit"), self.DEFAULT_RECENT_EVENTS_LIMIT),
+            10,
+        )
 
         self.update_config(
             {
@@ -124,8 +146,10 @@ class P115TransferEnqueueBridge(_PluginBase):
                 "clouddrive2_prefix": self._clouddrive2_prefix,
                 "share_transfer_hook_enabled": self._share_transfer_hook_enabled,
                 "share_transfer_delay": self._share_transfer_delay,
-                "share_transfer_max_new_items": self._share_transfer_max_new_items,
-                "share_transfer_fallback_roots": self._share_transfer_fallback_roots_text,
+                "share_transfer_enqueue_roots": self._share_transfer_enqueue_roots_text,
+                "share_roots_schedule_enabled": self._share_roots_schedule_enabled,
+                "share_roots_schedule_cron": self._share_roots_schedule_cron,
+                "recent_events_limit": self._recent_events_limit,
             }
         )
 
@@ -152,13 +176,73 @@ class P115TransferEnqueueBridge(_PluginBase):
         """
         定义远程控制命令
         """
-        return []
+        return [
+            {
+                "cmd": "/115bridge_poll",
+                "event": EventType.PluginAction,
+                "desc": "立即运行115下载历史整理桥接",
+                "category": "115整理桥接",
+                "data": {"action": "p115bridge_poll"},
+            },
+            {
+                "cmd": "/115bridge_share",
+                "event": EventType.PluginAction,
+                "desc": "立即入队115分享转存目录",
+                "category": "115整理桥接",
+                "data": {"action": "p115bridge_share"},
+            },
+            {
+                "cmd": "/115bridge_status",
+                "event": EventType.PluginAction,
+                "desc": "查看115整理桥接状态",
+                "category": "115整理桥接",
+                "data": {"action": "p115bridge_status"},
+            },
+            {
+                "cmd": "/115bridge_clear_cache",
+                "event": EventType.PluginAction,
+                "desc": "清理115整理桥接去重缓存",
+                "category": "115整理桥接",
+                "data": {"action": "p115bridge_clear_cache"},
+            },
+        ]
 
     def get_api(self) -> List[Dict[str, Any]]:
         """
         获取插件 API
         """
-        return []
+        return [
+            {
+                "path": "/poll_now",
+                "endpoint": self._api_poll_now,
+                "methods": ["POST"],
+                "summary": "立即运行一次下载历史轮询",
+            },
+            {
+                "path": "/enqueue_share_roots",
+                "endpoint": self._api_enqueue_share_roots,
+                "methods": ["POST"],
+                "summary": "立即将分享转存目录加入整理队列",
+            },
+            {
+                "path": "/reset_cursor",
+                "endpoint": self._api_reset_cursor,
+                "methods": ["POST"],
+                "summary": "重置下载历史游标",
+            },
+            {
+                "path": "/clear_cache",
+                "endpoint": self._api_clear_cache,
+                "methods": ["POST"],
+                "summary": "清理路径去重缓存",
+            },
+            {
+                "path": "/status",
+                "endpoint": self._api_status,
+                "methods": ["GET"],
+                "summary": "获取插件状态",
+            },
+        ]
 
     def get_service(self) -> List[Dict[str, Any]] | None:
         """
@@ -168,20 +252,36 @@ class P115TransferEnqueueBridge(_PluginBase):
             return None
 
         self._ensure_share_transfer_hook()
+        services: List[Dict[str, Any]] = []
 
         trigger = self._build_trigger()
-        if not trigger:
-            return None
+        if trigger:
+            services.append(
+                {
+                    "id": "P115TransferEnqueueBridge_poll",
+                    "name": "115下载历史整理入队桥接",
+                    "trigger": trigger,
+                    "func": self.poll_download_history,
+                    "kwargs": {},
+                }
+            )
 
-        return [
-            {
-                "id": "P115TransferEnqueueBridge_poll",
-                "name": "115下载历史整理入队桥接",
-                "trigger": trigger,
-                "func": self.poll_download_history,
-                "kwargs": {},
-            }
-        ]
+        if self._share_roots_schedule_enabled and self._share_roots_schedule_cron:
+            try:
+                services.append(
+                    {
+                        "id": "P115TransferEnqueueBridge_share_roots_schedule",
+                        "name": "115分享目录定时补漏入队",
+                        "trigger": CronTrigger.from_crontab(self._share_roots_schedule_cron),
+                        "func": self.enqueue_share_roots_scheduled,
+                        "kwargs": {},
+                    }
+                )
+            except Exception as err:
+                logger.error(f"【115整理桥接】分享目录定时补漏 Cron 无效: {err}", exc_info=True)
+                self._record_recent_event("ERROR", "-", f"分享目录定时补漏 Cron 无效: {err}")
+
+        return services or None
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
@@ -192,61 +292,37 @@ class P115TransferEnqueueBridge(_PluginBase):
                 "component": "VForm",
                 "content": [
                     {
+                        "component": "VAlert",
+                        "props": {
+                            "type": "info",
+                            "variant": "tonal",
+                            "density": "compact",
+                            "class": "mb-2",
+                            "text": "v0.3.0：分享转存成功后直接将配置目录加入 MP 原生整理队列；支持立即运行、定时补漏、中文状态和可读时间。",
+                        },
+                    },
+                    {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "enabled",
-                                            "label": "启用插件",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "dry_run",
-                                            "label": "仅日志演练",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VSwitch", "props": {"model": "dry_run", "label": "仅日志演练"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "interval",
-                                            "label": "轮询间隔（秒）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VTextField", "props": {"model": "interval", "label": "轮询间隔（秒）", "type": "number"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "debounce_seconds",
-                                            "label": "去重冷却（秒）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VTextField", "props": {"model": "debounce_seconds", "label": "去重冷却（秒）", "type": "number"}}],
                             },
                         ],
                     },
@@ -256,30 +332,12 @@ class P115TransferEnqueueBridge(_PluginBase):
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "source_username",
-                                            "label": "来源用户名",
-                                            "placeholder": "P115StrgmSub",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VTextField", "props": {"model": "source_username", "label": "来源用户名", "placeholder": "P115StrgmSub"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cron",
-                                            "label": "Cron 表达式",
-                                            "placeholder": "留空则使用轮询间隔，如 */2 * * * *",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VTextField", "props": {"model": "cron", "label": "下载历史轮询 Cron", "placeholder": "留空则使用轮询间隔，如 */2 * * * *"}}],
                             },
                         ],
                     },
@@ -294,9 +352,9 @@ class P115TransferEnqueueBridge(_PluginBase):
                                         "component": "VTextarea",
                                         "props": {
                                             "model": "allowed_roots",
-                                            "label": "允许入队的根目录",
-                                            "rows": 5,
-                                            "placeholder": "/网盘整理/网盘待整理目录/Movie\n/网盘整理/网盘待整理目录/TV\n留空表示不过滤",
+                                            "label": "允许入队的根目录（安全过滤器，不是主动入队列表）",
+                                            "rows": 4,
+                                            "placeholder": "/最近接收\n/网盘整理/分享转存目录\n留空表示不过滤",
                                         },
                                     }
                                 ],
@@ -309,30 +367,13 @@ class P115TransferEnqueueBridge(_PluginBase):
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "clouddrive2_enabled",
-                                            "label": "优先按 CloudDrive2 解析",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VSwitch", "props": {"model": "clouddrive2_enabled", "label": "优先按 CloudDrive2 解析"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 8},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "clouddrive2_prefix",
-                                            "label": "CloudDrive2 前缀",
-                                            "placeholder": "/115open",
-                                        },
-                                    }
-                                ],
-                            }
+                                "content": [{"component": "VTextField", "props": {"model": "clouddrive2_prefix", "label": "CloudDrive2 前缀", "placeholder": "/115open"}}],
+                            },
                         ],
                     },
                     {
@@ -341,43 +382,17 @@ class P115TransferEnqueueBridge(_PluginBase):
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "share_transfer_hook_enabled",
-                                            "label": "桥接STRM助手分享转存",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VSwitch", "props": {"model": "share_transfer_hook_enabled", "label": "桥接STRM助手分享转存"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "share_transfer_delay",
-                                            "label": "转存成功后延迟检测（秒）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VTextField", "props": {"model": "share_transfer_delay", "label": "分享成功后延迟入队（秒）", "type": "number"}}],
                             },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "share_transfer_max_new_items",
-                                            "label": "每次最多入队新增项",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
+                                "content": [{"component": "VTextField", "props": {"model": "recent_events_limit", "label": "事件记录数量", "type": "number"}}],
                             },
                         ],
                     },
@@ -391,10 +406,10 @@ class P115TransferEnqueueBridge(_PluginBase):
                                     {
                                         "component": "VTextarea",
                                         "props": {
-                                            "model": "share_transfer_fallback_roots",
-                                            "label": "分享转存候选兜底根目录",
-                                            "rows": 3,
-                                            "placeholder": "/最近接收\n/网盘整理/分享转存目录\n候选路径解析失败时，会用分享顶层项目名依次拼接这些根目录再尝试入队",
+                                            "model": "share_transfer_enqueue_roots",
+                                            "label": "分享转存成功后自动入队目录",
+                                            "rows": 4,
+                                            "placeholder": "/最近接收\n/网盘整理/分享转存目录\nSTRM助手报告分享转存成功后，会把这些目录逐个加入 MP 原生整理队列",
                                         },
                                     }
                                 ],
@@ -402,19 +417,28 @@ class P115TransferEnqueueBridge(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{"component": "VSwitch", "props": {"model": "share_roots_schedule_enabled", "label": "启用分享目录定时补漏"}}],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [{"component": "VTextField", "props": {"model": "share_roots_schedule_cron", "label": "分享目录定时补漏 Cron", "placeholder": "例如：0 3 * * *"}}],
+                            },
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
-                            "type": "info",
+                            "type": "success",
                             "variant": "tonal",
                             "density": "compact",
                             "class": "mt-2",
-                            "text": (
-                                "插件会轮询 DownloadHistory 中 source_username 对应的新记录，"
-                                "按 path 去重后调用 MoviePilot 原生整理队列。"
-                                "开启分享转存桥接后，仅包装115网盘STRM助手分享转存成功返回值，"
-                                "成功后优先按分享链接顶层项目构造候选路径入队；原候选解析失败时会尝试“分享转存候选兜底根目录”；仍失败时才降级为一次目录差异检测，不做常驻目录扫描。"
-                                "Cron 优先于 interval，首次运行默认只建立游标，不自动回补历史记录。"
-                            ),
+                            "text": "远程命令：/115bridge_poll 立即轮询；/115bridge_share 立即入队分享目录；/115bridge_status 查看状态；/115bridge_clear_cache 清理去重缓存。",
                         },
                     },
                 ],
@@ -431,14 +455,18 @@ class P115TransferEnqueueBridge(_PluginBase):
             "clouddrive2_prefix": "/115open",
             "share_transfer_hook_enabled": False,
             "share_transfer_delay": self.DEFAULT_SHARE_TRANSFER_DELAY,
-            "share_transfer_max_new_items": self.DEFAULT_SHARE_TRANSFER_MAX_NEW_ITEMS,
-            "share_transfer_fallback_roots": "\n".join(self.DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS),
+            "share_transfer_enqueue_roots": "\n".join(self.DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS),
+            "share_roots_schedule_enabled": False,
+            "share_roots_schedule_cron": "",
+            "recent_events_limit": self.DEFAULT_RECENT_EVENTS_LIMIT,
         }
 
     def get_page(self) -> Optional[List[dict]]:
         """
         获取插件详情页面
         """
+        runtime_state = self._load_runtime_state()
+        stats = runtime_state.get("stats") or {}
         recent_events = self.get_data(self.RECENT_EVENTS_KEY) or []
         if not recent_events:
             recent_events = [
@@ -446,18 +474,40 @@ class P115TransferEnqueueBridge(_PluginBase):
                     "time": "-",
                     "status": "INFO",
                     "path": "暂无记录",
-                    "message": "等待下一次轮询",
+                    "message": "等待下一次运行",
                 }
             ]
 
+        summary_items = [
+            f"运行状态：{'✅ 已启用' if self._enabled else '⏸️ 未启用'}",
+            f"分享转存桥接：{'✅ 已启用' if self._share_transfer_hook_enabled else '⏸️ 未启用'}",
+            f"来源用户：{self._source_username}",
+            f"轮询方式：{self._cron or f'每 {self._interval} 秒'}",
+            f"允许根目录：{len(self._allowed_roots)} 个（留空表示不过滤）",
+            f"分享自动入队目录：{len(self._share_transfer_enqueue_roots)} 个",
+            f"定时补漏：{'✅ 已启用 ' + self._share_roots_schedule_cron if self._share_roots_schedule_enabled and self._share_roots_schedule_cron else '⏸️ 未启用'}",
+            f"去重冷却：{self._debounce_seconds} 秒",
+        ]
+        stats_items = [
+            f"轮询次数：{stats.get('poll_runs', 0)}",
+            f"手动运行：{stats.get('manual_runs', 0)}",
+            f"分享转存触发：{stats.get('share_hook_success', 0)}",
+            f"定时补漏：{stats.get('scheduled_share_runs', 0)}",
+            f"成功入队：{stats.get('enqueue_success', 0)}",
+            f"跳过：{stats.get('enqueue_skip', 0)}",
+            f"错误：{stats.get('enqueue_error', 0)}",
+            f"最近运行：{stats.get('last_run_time') or '-'}",
+        ]
+
         rows = []
         for event in recent_events:
+            status_code = str(event.get("status") or "-")
             rows.append(
                 {
                     "component": "tr",
                     "content": [
                         {"component": "td", "text": str(event.get("time") or "-")},
-                        {"component": "td", "text": str(event.get("status") or "-")},
+                        {"component": "td", "text": self._status_text(status_code)},
                         {"component": "td", "text": str(event.get("path") or "-")},
                         {"component": "td", "text": str(event.get("message") or "-")},
                     ],
@@ -465,6 +515,32 @@ class P115TransferEnqueueBridge(_PluginBase):
             )
 
         return [
+            {
+                "component": "VAlert",
+                "props": {
+                    "type": "info",
+                    "variant": "tonal",
+                    "density": "compact",
+                    "class": "mb-2",
+                    "text": "115整理入队桥接 v0.3.0：分享转存成功后直接入队配置目录。API：POST /api/v1/plugin/P115TransferEnqueueBridge/poll_now、/enqueue_share_roots、/clear_cache、/reset_cursor。",
+                },
+            },
+            {
+                "component": "VCard",
+                "props": {"variant": "outlined", "class": "mb-2"},
+                "content": [
+                    {"component": "VCardTitle", "text": "运行摘要"},
+                    {"component": "VCardText", "text": " ｜ ".join(summary_items)},
+                ],
+            },
+            {
+                "component": "VCard",
+                "props": {"variant": "outlined", "class": "mb-2"},
+                "content": [
+                    {"component": "VCardTitle", "text": "累计统计"},
+                    {"component": "VCardText", "text": " ｜ ".join(stats_items)},
+                ],
+            },
             {
                 "component": "VTable",
                 "props": {"hover": True},
@@ -476,20 +552,119 @@ class P115TransferEnqueueBridge(_PluginBase):
                                 "component": "tr",
                                 "content": [
                                     {"component": "th", "text": "时间"},
-                                    {"component": "th", "text": "状态"},
+                                    {"component": "th", "text": "类型"},
                                     {"component": "th", "text": "路径"},
-                                    {"component": "th", "text": "说明"},
+                                    {"component": "th", "text": "结果"},
                                 ],
                             }
                         ],
                     },
-                    {
-                        "component": "tbody",
-                        "content": rows,
-                    },
+                    {"component": "tbody", "content": rows},
                 ],
-            }
+            },
         ]
+
+    async def _api_poll_now(self) -> Dict[str, Any]:
+        try:
+            result = self.run_poll_now(source="API立即运行")
+            return {"code": 0, "message": "已完成下载历史轮询", "data": result}
+        except Exception as err:
+            logger.error(f"【115整理桥接】API立即轮询失败: {err}", exc_info=True)
+            return {"code": 1, "message": str(err), "data": None}
+
+    async def _api_enqueue_share_roots(self) -> Dict[str, Any]:
+        try:
+            result = self.enqueue_share_roots_now(reason="API手动触发")
+            return {"code": 0, "message": "已完成分享目录入队", "data": result}
+        except Exception as err:
+            logger.error(f"【115整理桥接】API分享目录入队失败: {err}", exc_info=True)
+            return {"code": 1, "message": str(err), "data": None}
+
+    async def _api_reset_cursor(self) -> Dict[str, Any]:
+        try:
+            result = self.reset_cursor()
+            return {"code": 0, "message": "已重置游标", "data": result}
+        except Exception as err:
+            logger.error(f"【115整理桥接】API重置游标失败: {err}", exc_info=True)
+            return {"code": 1, "message": str(err), "data": None}
+
+    async def _api_clear_cache(self) -> Dict[str, Any]:
+        try:
+            result = self.clear_path_cache()
+            return {"code": 0, "message": "已清理去重缓存", "data": result}
+        except Exception as err:
+            logger.error(f"【115整理桥接】API清理缓存失败: {err}", exc_info=True)
+            return {"code": 1, "message": str(err), "data": None}
+
+    async def _api_status(self) -> Dict[str, Any]:
+        return {"code": 0, "message": "success", "data": self._status_summary()}
+
+    @eventmanager.register(EventType.PluginAction)
+    def remote_action(self, event: Event = None):
+        if not event or not event.event_data:
+            return
+        action = event.event_data.get("action")
+        if action not in {"p115bridge_poll", "p115bridge_share", "p115bridge_status", "p115bridge_clear_cache"}:
+            return
+        channel = event.event_data.get("channel")
+        userid = event.event_data.get("user")
+        try:
+            if action == "p115bridge_poll":
+                result = self.run_poll_now(source="远程命令")
+                title = "115整理桥接：立即轮询完成"
+                text = f"入队 {result.get('enqueued', 0)}，跳过 {result.get('skipped', 0)}"
+            elif action == "p115bridge_share":
+                result = self.enqueue_share_roots_now(reason="远程命令")
+                title = "115整理桥接：分享目录入队完成"
+                text = f"成功 {result.get('enqueued', 0)}，跳过 {result.get('skipped', 0)}，失败 {result.get('errors', 0)}"
+            elif action == "p115bridge_clear_cache":
+                result = self.clear_path_cache()
+                title = "115整理桥接：缓存已清理"
+                text = f"清理路径数：{result.get('cleared', 0)}"
+            else:
+                summary = self._status_summary()
+                title = "115整理桥接状态"
+                text = "\n".join(f"{k}: {v}" for k, v in summary.items())
+            self.post_message(channel=channel, title=title, text=text, userid=userid)
+        except Exception as err:
+            logger.error(f"【115整理桥接】远程命令执行失败: {err}", exc_info=True)
+            self.post_message(channel=channel, title="115整理桥接：远程命令失败", text=str(err), userid=userid)
+
+    def run_poll_now(self, source: str = "手动触发") -> Dict[str, int]:
+        self._stats_increment("manual_runs")
+        return self.poll_download_history(source=source)
+
+    def reset_cursor(self) -> Dict[str, Any]:
+        runtime_state = self._load_runtime_state()
+        runtime_state["cursor_state"] = {}
+        self._save_runtime_state(runtime_state)
+        self._record_recent_event("CURSOR", "-", "下载历史游标已重置；下次运行会重新建立游标")
+        return {"reset": True}
+
+    def clear_path_cache(self) -> Dict[str, int]:
+        runtime_state = self._load_runtime_state()
+        path_cache = runtime_state.get("path_cache") or {}
+        cleared = len(path_cache)
+        runtime_state["path_cache"] = {}
+        self._save_runtime_state(runtime_state)
+        self._record_recent_event("CACHE", "-", f"已清理去重缓存，共 {cleared} 条")
+        return {"cleared": cleared}
+
+    def _status_summary(self) -> Dict[str, Any]:
+        runtime_state = self._load_runtime_state()
+        stats = runtime_state.get("stats") or {}
+        return {
+            "enabled": self._enabled,
+            "version": self.plugin_version,
+            "source_username": self._source_username,
+            "interval": self._interval,
+            "cron": self._cron,
+            "share_transfer_hook_enabled": self._share_transfer_hook_enabled,
+            "share_transfer_enqueue_roots": [str(path) for path in self._share_transfer_enqueue_roots],
+            "share_roots_schedule_enabled": self._share_roots_schedule_enabled,
+            "share_roots_schedule_cron": self._share_roots_schedule_cron,
+            "stats": stats,
+        }
 
     def stop_service(self):
         """
@@ -497,22 +672,24 @@ class P115TransferEnqueueBridge(_PluginBase):
         """
         self._restore_share_transfer_hook()
 
-    def poll_download_history(self):
+    def poll_download_history(self, source: str = "定时轮询") -> Dict[str, int]:
         """
         轮询 DownloadHistory 并加入整理队列
         """
         self._ensure_share_transfer_hook()
+        self._stats_increment("poll_runs")
 
         try:
             records, table_info = self._fetch_recent_records()
         except Exception as err:
             logger.error(f"【115整理桥接】读取下载历史失败: {err}", exc_info=True)
             self._record_recent_event("ERROR", "-", f"读取下载历史失败: {err}")
-            return
+            self._stats_increment("enqueue_error")
+            return {"enqueued": 0, "skipped": 0, "errors": 1}
 
         if not records:
             logger.debug("【115整理桥接】未查询到来源用户 %s 的下载历史", self._source_username)
-            return
+            return {"enqueued": 0, "skipped": 0, "errors": 0}
 
         cursor_key = table_info.get("cursor_col") or ""
         path_key = table_info.get("path_col") or "path"
@@ -530,8 +707,8 @@ class P115TransferEnqueueBridge(_PluginBase):
             runtime_state["cursor_state"] = cursor_state
             self._save_runtime_state(runtime_state)
             logger.info("【115整理桥接】首次运行已建立游标，不回补已有历史记录")
-            self._record_recent_event("INFO", "-", "首次运行已建立游标")
-            return
+            self._record_recent_event("CURSOR", "-", "首次运行已建立游标，不回补已有历史记录")
+            return {"enqueued": 0, "skipped": 0, "errors": 0}
 
         new_records = []
         for record in reversed(records):
@@ -543,7 +720,8 @@ class P115TransferEnqueueBridge(_PluginBase):
 
         if not new_records:
             logger.debug("【115整理桥接】未发现新的下载历史记录")
-            return
+            self._update_last_run_time()
+            return {"enqueued": 0, "skipped": 0, "errors": 0}
 
         path_cache = runtime_state.get("path_cache") or {}
         now_ts = int(time())
@@ -586,19 +764,21 @@ class P115TransferEnqueueBridge(_PluginBase):
         runtime_state["cursor_state"] = cursor_state
         runtime_state["path_cache"] = self._trim_path_cache(path_cache, now_ts)
         self._save_runtime_state(runtime_state)
+        self._stats_increment("enqueue_success", handled_count)
+        self._stats_increment("enqueue_skip", skipped_count)
+        self._update_last_run_time()
         logger.info(
             "【115整理桥接】本轮处理完成 新记录=%s 入队=%s 跳过=%s",
             len(new_records),
             handled_count,
             skipped_count,
         )
+        self._record_recent_event("DONE", "-", f"{source}完成：新记录 {len(new_records)}，入队 {handled_count}，跳过 {skipped_count}")
+        return {"enqueued": handled_count, "skipped": skipped_count, "errors": 0}
 
     def _ensure_share_transfer_hook(self) -> None:
         """
         按需包装 P115StrmHelper 的分享转存函数。
-
-        该包装只读取 add_share_115 的成功返回值，不修改 STRM助手源码，不常驻扫描115目录。
-        成功后在后台线程延迟处理候选路径；优先按分享链接顶层项目入队，失败时才降级为目录差异检测。
         """
         if not self._enabled or not self._share_transfer_hook_enabled:
             self._restore_share_transfer_hook()
@@ -630,9 +810,8 @@ class P115TransferEnqueueBridge(_PluginBase):
             bridge = self
 
             def wrapped_add_share_115(*args, **kwargs):
-                share_context = bridge._prepare_share_transfer_context(helper, args, kwargs)
                 result = original_func(*args, **kwargs)
-                bridge._schedule_share_transfer_enqueue(result, share_context)
+                bridge._schedule_share_transfer_roots_enqueue(result)
                 return result
 
             setattr(helper, "add_share_115", wrapped_add_share_115)
@@ -663,192 +842,17 @@ class P115TransferEnqueueBridge(_PluginBase):
                     logger.debug(f"【115整理桥接】恢复分享转存函数失败: {err}")
             self._share_transfer_hooked_helper = None
 
-    def _prepare_share_transfer_context(
-        self,
-        helper: Any,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    def _schedule_share_transfer_roots_enqueue(self, result: Any) -> None:
         """
-        分享转存前准备桥接上下文。
-
-        v0.2.2 起优先读取分享链接根目录顶层项目名，构造 parent_path/item_name 候选路径。
-        这样即使 115 将内容合并到已存在目录，或 CloudDrive2 父目录列表缓存未刷新，也能按本次分享内容入队。
-        只有候选路径解析失败时，才保留 v0.2.1 的父目录一层快照作为兜底。
-        """
-        parent_path = self._extract_share_transfer_parent_path(args, kwargs)
-        share_url = self._extract_share_transfer_url(args, kwargs)
-        candidate_paths: List[str] = []
-
-        if parent_path and share_url:
-            candidate_paths = self._extract_share_root_candidate_paths(
-                helper=helper,
-                share_url=share_url,
-                parent_path=parent_path,
-            )
-
-        before_items: Dict[str, str] = {}
-        snapshot_ok = False
-        if parent_path and not candidate_paths:
-            items = self._snapshot_share_parent(parent_path)
-            snapshot_ok = bool(items is not None)
-            before_items = items or {}
-
-        return {
-            "parent_path": parent_path,
-            "share_url": share_url,
-            "candidate_paths": candidate_paths,
-            "snapshot_ok": snapshot_ok,
-            "before_items": before_items,
-        }
-
-    @staticmethod
-    def _extract_share_transfer_url(
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ) -> str:
-        """
-        从 add_share_115 调用参数中提取分享链接。
-        """
-        url = kwargs.get("url")
-        if not url and args:
-            url = args[0]
-        return str(url or "").strip()
-
-    def _extract_share_transfer_parent_path(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ) -> str:
-        """
-        从 add_share_115 调用参数中推断本次分享转存目录。
-        """
-        pan_path = kwargs.get("pan_path")
-        if not pan_path and len(args) >= 6:
-            pan_path = args[5]
-        if pan_path:
-            return self._normalize_path(pan_path)
-
-        try:
-            from app.plugins.p115strmhelper.core.config import configer
-
-            paths = configer.share_recieve_paths or []
-            if paths:
-                return self._normalize_path(paths[0])
-        except Exception as err:
-            logger.debug(f"【115整理桥接】读取 P115StrmHelper 分享转存默认目录失败: {err}")
-        return ""
-
-    def _extract_share_root_candidate_paths(
-        self,
-        helper: Any,
-        share_url: str,
-        parent_path: str,
-    ) -> List[str]:
-        """
-        读取分享链接根目录顶层项目名，构造本次转存成功后的候选入队路径。
-        """
-        normalized_parent = self._normalize_path(parent_path)
-        if not share_url or not normalized_parent:
-            return []
-
-        try:
-            data = helper.share_url_extract(share_url)
-            share_code = data.get("share_code")
-            receive_code = data.get("receive_code")
-        except Exception as err:
-            logger.debug(f"【115整理桥接】解析分享链接候选路径失败: {err}")
-            return []
-
-        if not share_code or not receive_code:
-            logger.debug("【115整理桥接】分享链接缺少 share_code/receive_code，无法构造候选路径")
-            return []
-
-        try:
-            from app.plugins.p115strmhelper.core.config import configer
-            from p115client.tool.iterdir import share_iterdir
-
-            client = getattr(helper, "client", None)
-            if client is None:
-                logger.debug("【115整理桥接】P115StrmHelper helper.client 为空，无法读取分享顶层项目")
-                return []
-
-            candidate_paths: List[str] = []
-            for item in share_iterdir(
-                client,
-                receive_code=receive_code,
-                share_code=share_code,
-                cid=0,
-                app="web",
-                **configer.get_ios_ua_app(app=False),
-            ):
-                item_name = str(item.get("name") or "").strip()
-                if not item_name:
-                    continue
-                candidate_paths.append(self._normalize_path(Path(normalized_parent) / item_name))
-                if len(candidate_paths) >= self._share_transfer_max_new_items:
-                    break
-
-            if candidate_paths:
-                logger.info(
-                    "【115整理桥接】分享转存候选路径解析完成 parent=%s candidates=%s",
-                    normalized_parent,
-                    len(candidate_paths),
-                )
-            else:
-                logger.debug("【115整理桥接】分享链接顶层项目为空，无法构造候选路径")
-            return candidate_paths
-        except Exception as err:
-            logger.warning(f"【115整理桥接】读取分享链接顶层项目失败，将降级目录差异检测: {err}", exc_info=True)
-            return []
-
-    def _schedule_share_transfer_enqueue(
-        self,
-        result: Any,
-        share_context: Dict[str, Any],
-    ) -> None:
-        """
-        分享转存成功后启动后台线程延迟处理候选路径或兜底目录差异。
+        STRM助手分享转存成功后，延迟将配置目录加入整理队列。
         """
         if not self._is_share_transfer_success(result):
             return
-
-        result_parent_path = self._extract_share_transfer_parent_path_from_result(result)
-        parent_path = result_parent_path or str(share_context.get("parent_path") or "")
-        parent_path = self._normalize_path(parent_path)
-        if not parent_path:
-            self._record_recent_event("SHARE-SKIP", "-", "分享转存成功但无法确定转存目录")
-            return
-
-        candidate_paths = [
-            self._normalize_path(path)
-            for path in (share_context.get("candidate_paths") or [])
-            if self._normalize_path(path)
-        ]
-        if result_parent_path and candidate_paths:
-            context_parent = self._normalize_path(str(share_context.get("parent_path") or ""))
-            if context_parent and context_parent != parent_path:
-                candidate_paths = [
-                    self._normalize_path(Path(parent_path) / Path(path).name)
-                    for path in candidate_paths
-                    if Path(path).name
-                ]
-
-        snapshot_ok = bool(share_context.get("snapshot_ok"))
-        before_items = dict(share_context.get("before_items") or {})
-
-        if not candidate_paths and not snapshot_ok:
-            self._record_recent_event(
-                "SHARE-SKIP",
-                parent_path,
-                "分享转存成功但候选路径解析失败，且转存前快照失败，为避免误扫历史目录，本次不自动入队",
-            )
-            return
-
+        self._stats_increment("share_hook_success")
         worker = Thread(
-            target=self._delayed_enqueue_share_transfer,
-            args=(parent_path, candidate_paths, before_items),
-            name="P115TransferEnqueueBridge-ShareTransfer",
+            target=self._delayed_enqueue_share_transfer_roots,
+            args=("分享转存成功",),
+            name="P115TransferEnqueueBridge-ShareRoots",
             daemon=True,
         )
         worker.start()
@@ -860,244 +864,98 @@ class P115TransferEnqueueBridge(_PluginBase):
         """
         return isinstance(result, tuple) and len(result) >= 1 and bool(result[0])
 
-    def _extract_share_transfer_parent_path_from_result(self, result: Any) -> str:
-        """
-        从 P115StrmHelper.add_share_115 成功返回值中提取转存目录。
-        当前返回结构为 (True, file_mediainfo, parent_path, parent_id)。
-        """
-        if isinstance(result, tuple) and len(result) >= 3:
-            return self._normalize_path(result[2])
-        return ""
-
-    def _delayed_enqueue_share_transfer(
-        self,
-        parent_path: str,
-        candidate_paths: List[str],
-        before_items: Dict[str, str],
-    ) -> None:
-        """
-        延迟处理分享转存入队。
-
-        优先处理分享链接顶层候选路径；候选路径为空时，降级为 v0.2.1 的父目录一层差异检测。
-        """
+    def _delayed_enqueue_share_transfer_roots(self, reason: str) -> None:
         delay = max(self._share_transfer_delay, 0)
         if delay:
             sleep(delay)
+        self._enqueue_share_transfer_roots(reason=reason)
 
-        target_paths = [self._normalize_path(path) for path in candidate_paths if self._normalize_path(path)]
-        detection_mode = "candidate"
-
-        if not target_paths:
-            after_items = self._snapshot_share_parent(parent_path)
-            if after_items is None:
-                self._record_recent_event("SHARE-ERROR", parent_path, "分享转存后快照失败")
-                return
-
-            target_paths = [path for path in after_items.keys() if path not in before_items]
-            detection_mode = "snapshot"
-            if not target_paths:
-                self._record_recent_event("SHARE-SKIP", parent_path, "分享转存成功但未检测到新增子项")
-                return
-
-        # 去重并保持顺序，避免分享接口重复返回同名路径。
-        deduped_paths: List[str] = []
-        seen_paths = set()
-        for path in target_paths:
-            normalized_path = self._normalize_path(path)
-            if not normalized_path or normalized_path in seen_paths:
-                continue
-            seen_paths.add(normalized_path)
-            deduped_paths.append(normalized_path)
-
-        if len(deduped_paths) > self._share_transfer_max_new_items:
-            self._record_recent_event(
-                "SHARE-SKIP",
-                parent_path,
-                f"检测到待入队项 {len(deduped_paths)} 个，超过上限 {self._share_transfer_max_new_items}，为避免误入队已跳过",
-            )
-            return
-
-        path_cache = {}
-        try:
-            runtime_state = self._load_runtime_state()
-            path_cache = runtime_state.get("path_cache") or {}
-        except Exception:
-            runtime_state = {"path_cache": {}}
-
-        now_ts = int(time())
-        enqueued = 0
-        skipped = 0
-        for path in deduped_paths:
-            normalized_path = self._normalize_path(path)
-            if not normalized_path:
-                skipped += 1
-                continue
-            if not self._is_path_allowed(Path(normalized_path)):
-                skipped += 1
-                self._record_recent_event("SHARE-SKIP", normalized_path, "路径不在允许根目录内")
-                continue
-            if not self._should_process_path(normalized_path, path_cache, now_ts):
-                skipped += 1
-                self._record_recent_event("SHARE-SKIP", normalized_path, "仍处于去重冷却中")
-                continue
-            if self._enqueue_path(normalized_path):
-                enqueued += 1
-                path_cache[normalized_path] = now_ts
-                self._record_recent_event("SHARE-ENQUEUE", normalized_path, f"分享转存候选路径已入队 mode={detection_mode}")
-                continue
-
-            fallback_enqueued = False
-            if detection_mode == "candidate":
-                for fallback_path in self._build_share_candidate_fallback_paths(normalized_path, parent_path):
-                    if not self._is_path_allowed(Path(fallback_path)):
-                        self._record_recent_event("SHARE-SKIP", fallback_path, "候选兜底路径不在允许根目录内")
-                        continue
-                    if not self._should_process_path(fallback_path, path_cache, now_ts):
-                        self._record_recent_event("SHARE-SKIP", fallback_path, "候选兜底路径仍处于去重冷却中")
-                        continue
-                    if self._enqueue_path(fallback_path):
-                        enqueued += 1
-                        path_cache[fallback_path] = now_ts
-                        fallback_enqueued = True
-                        self._record_recent_event(
-                            "SHARE-ENQUEUE",
-                            fallback_path,
-                            f"原候选路径解析失败，已用兜底路径入队 original={normalized_path}",
-                        )
-                        break
-            if not fallback_enqueued:
-                skipped += 1
-
-        runtime_state["path_cache"] = self._trim_path_cache(path_cache, now_ts)
-        self._save_runtime_state(runtime_state)
-        self._record_recent_event(
-            "SHARE-DONE",
-            parent_path,
-            f"分享转存处理完成 mode={detection_mode} 待处理={len(deduped_paths)} 入队={enqueued} 跳过={skipped}",
-        )
-
-    def _build_share_candidate_fallback_paths(self, original_path: str, parent_path: str) -> List[str]:
+    def enqueue_share_roots_scheduled(self):
         """
-        当 STRM助手返回的 parent_path 与 115/CloudDrive2 实际可见接收目录不一致时，
-        用同一个分享顶层项目名在备用根目录下再尝试一次。
-
-        典型场景：STRM助手日志/返回仍显示 /网盘整理/分享转存目录，
-        但 CloudDrive2 实际可解析路径在 /最近接收/片名。
+        分享目录定时补漏入口。
         """
-        item_name = Path(self._normalize_path(original_path)).name
-        if not item_name:
-            return []
+        self._stats_increment("scheduled_share_runs")
+        return self._enqueue_share_transfer_roots(reason="定时补漏")
 
+    def enqueue_share_roots_now(self, reason: str = "手动触发") -> Dict[str, int]:
+        """
+        手动立即入队分享转存配置目录。
+        """
+        self._stats_increment("manual_runs")
+        return self._enqueue_share_transfer_roots(reason=reason)
+
+    def _get_share_transfer_enqueue_roots(self) -> List[str]:
+        """
+        获取分享转存成功后主动入队目录。
+        """
         roots: List[str] = []
-        configured_roots = self._share_transfer_fallback_roots or self._parse_allowed_roots(
-            "\n".join(self.DEFAULT_SHARE_TRANSFER_FALLBACK_ROOTS)
+        configured_roots = self._share_transfer_enqueue_roots or self._parse_allowed_roots(
+            "\n".join(self.DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS)
         )
         for root in configured_roots:
             normalized_root = self._normalize_path(root)
             if normalized_root and normalized_root not in roots:
                 roots.append(normalized_root)
+        return roots
 
+    def _enqueue_share_transfer_roots(self, reason: str) -> Dict[str, int]:
+        """
+        将配置的分享转存目录逐个加入 MP 原生整理队列。
+        """
+        if not self._runtime_lock.acquire(blocking=False):
+            self._record_recent_event("SHARE-SKIP", "-", f"{reason}：已有任务运行中，已跳过")
+            self._stats_increment("enqueue_skip")
+            return {"enqueued": 0, "skipped": 1, "errors": 0}
         try:
-            from app.plugins.p115strmhelper.core.config import configer
+            runtime_state = self._load_runtime_state()
+            path_cache = runtime_state.get("path_cache") or {}
+            now_ts = int(time())
+            enqueued = 0
+            skipped = 0
+            errors = 0
+            roots = self._get_share_transfer_enqueue_roots()
+            if not roots:
+                self._record_recent_event("SHARE-SKIP", "-", f"{reason}：未配置分享转存自动入队目录")
+                self._stats_increment("enqueue_skip")
+                return {"enqueued": 0, "skipped": 1, "errors": 0}
 
-            for root in configer.share_recieve_paths or []:
-                normalized_root = self._normalize_path(root)
-                if normalized_root and normalized_root not in roots:
-                    roots.append(normalized_root)
-        except Exception as err:
-            logger.debug(f"【115整理桥接】读取分享接收目录兜底列表失败: {err}")
+            for root in roots:
+                normalized_path = self._normalize_path(root)
+                if not normalized_path:
+                    skipped += 1
+                    continue
+                if not self._is_path_allowed(Path(normalized_path)):
+                    skipped += 1
+                    self._record_recent_event("SHARE-SKIP", normalized_path, f"{reason}：路径不在允许根目录内")
+                    continue
+                if not self._should_process_path(normalized_path, path_cache, now_ts):
+                    skipped += 1
+                    self._record_recent_event("SHARE-SKIP", normalized_path, f"{reason}：仍处于去重冷却中")
+                    continue
+                if self._enqueue_path(normalized_path):
+                    enqueued += 1
+                    path_cache[normalized_path] = now_ts
+                    self._record_recent_event("SHARE-ENQUEUE", normalized_path, f"{reason}：已加入整理队列")
+                else:
+                    errors += 1
 
-        normalized_parent = self._normalize_path(parent_path)
-        fallback_paths: List[str] = []
-        for root in roots:
-            if not root or root == normalized_parent:
-                continue
-            fallback_path = self._normalize_path(Path(root) / item_name)
-            if fallback_path and fallback_path != self._normalize_path(original_path) and fallback_path not in fallback_paths:
-                fallback_paths.append(fallback_path)
-        if fallback_paths:
-            logger.info(
-                "【115整理桥接】候选路径解析失败时将尝试兜底路径 original=%s fallbacks=%s",
-                original_path,
-                fallback_paths,
+            runtime_state["path_cache"] = self._trim_path_cache(path_cache, now_ts)
+            stats = runtime_state.get("stats") or {}
+            stats["last_run_time"] = self._now_text()
+            stats["last_share_enqueue_time"] = self._now_text()
+            stats["enqueue_success"] = self._safe_int(stats.get("enqueue_success"), 0) + enqueued
+            stats["enqueue_skip"] = self._safe_int(stats.get("enqueue_skip"), 0) + skipped
+            stats["enqueue_error"] = self._safe_int(stats.get("enqueue_error"), 0) + errors
+            runtime_state["stats"] = stats
+            self._save_runtime_state(runtime_state)
+            self._record_recent_event(
+                "SHARE-DONE",
+                "-",
+                f"{reason}完成：成功 {enqueued}，跳过 {skipped}，失败 {errors}",
             )
-        return fallback_paths
-
-    def _snapshot_share_parent(self, parent_path: str) -> Optional[Dict[str, str]]:
-        """
-        读取分享转存父目录的一层子项快照。
-        返回 source-path 风格路径到签名的映射；失败返回 None。
-        """
-        if not self._clouddrive2_enabled:
-            return self._snapshot_local_parent(parent_path)
-
-        parent_item = self._build_clouddrive2_file_item(parent_path)
-        if not parent_item:
-            logger.warning("【115整理桥接】分享转存父目录无法解析: %s", parent_path)
-            return None
-
-        storagechain = self._storagechain or StorageChain()
-        try:
-            entries = storagechain.list_files(parent_item) or []
-        except Exception as err:
-            logger.error(f"【115整理桥接】分享转存目录 list_files 失败: {parent_path} - {err}", exc_info=True)
-            return None
-
-        snapshot: Dict[str, str] = {}
-        normalized_parent = self._normalize_path(parent_path)
-        for entry in entries:
-            child_path = (Path(normalized_parent) / str(entry.name or "")).as_posix()
-            if not entry.name:
-                entry_path = str(getattr(entry, "path", "") or "")
-                child_path = self._cloud_path_to_source_path(entry_path) or child_path
-            snapshot[self._normalize_path(child_path)] = self._file_item_signature(entry)
-        return snapshot
-
-    def _snapshot_local_parent(self, parent_path: str) -> Optional[Dict[str, str]]:
-        """
-        本地路径模式的一层子项快照。
-        """
-        path_obj = Path(parent_path)
-        if not path_obj.exists() or not path_obj.is_dir():
-            return None
-        snapshot: Dict[str, str] = {}
-        try:
-            for child in path_obj.iterdir():
-                stat_result = child.stat()
-                snapshot[self._normalize_path(child)] = f"{child.name}|{'dir' if child.is_dir() else 'file'}|{stat_result.st_size}|{stat_result.st_mtime}"
-        except Exception as err:
-            logger.error(f"【115整理桥接】本地分享转存目录快照失败: {parent_path} - {err}", exc_info=True)
-            return None
-        return snapshot
-
-    def _cloud_path_to_source_path(self, cloud_path: str) -> str:
-        """
-        将 CloudDrive2 路径还原为115网盘源路径。
-        """
-        normalized_cloud_path = self._normalize_path(cloud_path)
-        normalized_prefix = self._normalize_path(self._clouddrive2_prefix)
-        if not normalized_cloud_path or not normalized_prefix:
-            return ""
-        if normalized_cloud_path == normalized_prefix:
-            return "/"
-        prefix_with_slash = normalized_prefix.rstrip("/") + "/"
-        if normalized_cloud_path.startswith(prefix_with_slash):
-            return "/" + normalized_cloud_path[len(prefix_with_slash):].lstrip("/")
-        return normalized_cloud_path
-
-    @staticmethod
-    def _file_item_signature(file_item: FileItem) -> str:
-        """
-        构造轻量快照签名。
-        """
-        return "|".join(
-            [
-                str(getattr(file_item, "name", "") or ""),
-                str(getattr(file_item, "type", "") or ""),
-                str(getattr(file_item, "size", "") or ""),
-                str(getattr(file_item, "modify_time", "") or ""),
-            ]
-        )
+            return {"enqueued": enqueued, "skipped": skipped, "errors": errors}
+        finally:
+            self._runtime_lock.release()
 
     def _build_trigger(self):
         """
@@ -1315,6 +1173,8 @@ class P115TransferEnqueueBridge(_PluginBase):
             runtime_state["path_cache"] = {}
         if not isinstance(runtime_state.get("cursor_state"), dict):
             runtime_state["cursor_state"] = {}
+        if not isinstance(runtime_state.get("stats"), dict):
+            runtime_state["stats"] = {}
         return runtime_state
 
     def _save_runtime_state(self, runtime_state: Dict[str, Any]) -> None:
@@ -1333,13 +1193,36 @@ class P115TransferEnqueueBridge(_PluginBase):
         recent_events.insert(
             0,
             {
-                "time": str(int(time())),
+                "time": self._now_text(),
+                "timestamp": int(time()),
                 "status": status,
                 "path": path,
                 "message": message,
             },
         )
-        self.save_data(self.RECENT_EVENTS_KEY, recent_events[: self.RECENT_EVENTS_LIMIT])
+        self.save_data(self.RECENT_EVENTS_KEY, recent_events[: self._recent_events_limit])
+
+    @staticmethod
+    def _now_text() -> str:
+        return datetime.now().strftime("%m-%d %H:%M:%S")
+
+    def _status_text(self, status: str) -> str:
+        return self.STATUS_TEXT_MAP.get(str(status or ""), str(status or "-"))
+
+    def _stats_increment(self, key: str, count: int = 1) -> None:
+        runtime_state = self._load_runtime_state()
+        stats = runtime_state.get("stats") or {}
+        stats[key] = self._safe_int(stats.get(key), 0) + count
+        stats["last_run_time"] = self._now_text()
+        runtime_state["stats"] = stats
+        self._save_runtime_state(runtime_state)
+
+    def _update_last_run_time(self) -> None:
+        runtime_state = self._load_runtime_state()
+        stats = runtime_state.get("stats") or {}
+        stats["last_run_time"] = self._now_text()
+        runtime_state["stats"] = stats
+        self._save_runtime_state(runtime_state)
 
     def _trim_path_cache(
         self,
