@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.event import eventmanager
+from app.core.config import settings
 from app.db.subscribe_oper import SubscribeOper
 from app.log import logger
 from app.plugins import _PluginBase
@@ -556,6 +557,7 @@ class Tg115AutoTransfer(_PluginBase):
                             "click": {
                                 "api": "plugin/Tg115AutoTransfer/scan_now",
                                 "method": "post",
+                                "params": {"apikey": settings.API_TOKEN},
                             }
                         },
                     }],
@@ -570,6 +572,7 @@ class Tg115AutoTransfer(_PluginBase):
                             "click": {
                                 "api": "plugin/Tg115AutoTransfer/reset",
                                 "method": "post",
+                                "params": {"apikey": settings.API_TOKEN},
                             }
                         },
                     }],
