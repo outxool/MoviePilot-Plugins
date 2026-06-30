@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.event import eventmanager
-from app.core.config import settings
 from app.db.subscribe_oper import SubscribeOper
 from app.log import logger
 from app.plugins import _PluginBase
@@ -24,7 +23,7 @@ class Tg115AutoTransfer(_PluginBase):
     plugin_name = "TG 115自动转存"
     plugin_desc = "增量扫描公开TG频道，匹配MoviePilot订阅并独立转存115资源"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.1"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "tg115autotransfer_"
@@ -131,9 +130,9 @@ class Tg115AutoTransfer(_PluginBase):
 
     def get_api(self) -> List[Dict[str, Any]]:
         return [
-            {"path": "/scan_now", "endpoint": self._api_scan_now, "methods": ["POST"], "summary": "立即扫描TG频道"},
-            {"path": "/status", "endpoint": self._api_status, "methods": ["GET"], "summary": "获取运行状态"},
-            {"path": "/reset", "endpoint": self._api_reset, "methods": ["POST"], "summary": "重置频道游标与去重记录"},
+            {"path": "/scan_now", "endpoint": self._api_scan_now, "methods": ["POST"], "auth": "bear", "summary": "立即扫描TG频道"},
+            {"path": "/status", "endpoint": self._api_status, "methods": ["GET"], "auth": "bear", "summary": "获取运行状态"},
+            {"path": "/reset", "endpoint": self._api_reset, "methods": ["POST"], "auth": "bear", "summary": "重置频道游标与去重记录"},
         ]
 
     @eventmanager.register(EventType.PluginAction)
@@ -273,20 +272,59 @@ class Tg115AutoTransfer(_PluginBase):
             ),
         )
 
+    def _record_scan_result(self, result: Dict[str, int], source: str, bridge_notified: bool = False) -> None:
+        state = self._load_state()
+        stats = state.setdefault("stats", {})
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats["runs"] = int(stats.get("runs", 0)) + 1
+        stats["last_run"] = now
+        stats["transferred"] = int(stats.get("transferred", 0)) + int(result.get("transferred", 0) or 0)
+        stats["previewed"] = int(stats.get("previewed", 0)) + int(result.get("previewed", 0) or 0)
+        stats["errors"] = int(stats.get("errors", 0)) + int(result.get("errors", 0) or 0)
+        state["last_result"] = {
+            **result,
+            "source": source,
+            "time": now,
+            "bridge_notified": bridge_notified,
+        }
+        self._save_state(state)
+
+    @staticmethod
+    def _log_scan_summary(result: Dict[str, int], source: str, bridge_notified: bool = False) -> None:
+        logger.info(
+            "〖TG115自动转存〗扫描结束：触发方式=%s，新消息=%s，匹配=%s，成功转存=%s，演练=%s，跳过=%s，失败=%s，整理桥接=%s",
+            source,
+            result.get("new_messages", 0),
+            result.get("matched", 0),
+            result.get("transferred", 0),
+            result.get("previewed", 0),
+            result.get("skipped", 0),
+            result.get("errors", 0),
+            "已通知" if bridge_notified else "未触发",
+        )
+
     def scan_once(self, source: str = "定时任务") -> Dict[str, int]:
         result = {"new_messages": 0, "matched": 0, "transferred": 0, "previewed": 0, "skipped": 0, "errors": 0}
+        logger.info("〖TG115自动转存〗开始扫描，触发方式：%s", source)
         if not self._run_lock.acquire(blocking=False):
             result["skipped"] += 1
+            logger.warning("〖TG115自动转存〗已有扫描正在运行，本次请求跳过，触发方式：%s", source)
+            self._record_scan_result(result, source, bridge_notified=False)
+            self._log_scan_summary(result, source, bridge_notified=False)
             return result
         tg_client = None
         try:
             channels = self._channels()
             if not channels:
-                logger.warning("〖TG115自动转存〗未配置公开频道")
+                logger.warning("〖TG115自动转存〗未配置公开频道，本次扫描结束")
+                self._record_scan_result(result, source, bridge_notified=False)
+                self._log_scan_summary(result, source, bridge_notified=False)
                 return result
             subscriptions = self._subscriptions()
             if not subscriptions:
-                logger.warning("〖TG115自动转存〗没有可匹配的活动订阅")
+                logger.warning("〖TG115自动转存〗没有可匹配的活动订阅，本次扫描结束。请确认 MoviePilot 中存在未完成/未停用的订阅。")
+                self._record_scan_result(result, source, bridge_notified=False)
+                self._log_scan_summary(result, source, bridge_notified=False)
                 return result
 
             state = self._load_state()
@@ -302,16 +340,28 @@ class Tg115AutoTransfer(_PluginBase):
             transfer_client = None
             successful_transfer = False
 
+            logger.info(
+                "〖TG115自动转存〗扫描配置：频道数=%s，活动订阅数=%s，最低匹配分=%s，目标目录=%s，首次回补=%s，演练模式=%s",
+                len(channels),
+                len(subscriptions),
+                self._minimum_score,
+                self._target_pan_path(),
+                "开启" if self._first_run_backfill else "关闭",
+                "开启" if self._dry_run else "关闭",
+            )
+
             for channel in channels:
                 try:
                     messages = sorted(tg_client.fetch_latest(channel), key=lambda item: item.message_id)
                 except Exception as err:
-                    logger.error("〖TG115自动转存〗频道 %s 读取失败: %s", channel, err)
+                    logger.error("〖TG115自动转存〗频道 %s 读取失败: %s", channel, err, exc_info=True)
                     result["errors"] += 1
                     continue
+                logger.info("〖TG115自动转存〗频道 %s 当前页读取到 %s 条含115链接的消息", channel, len(messages))
                 if not messages:
                     # 即便当前页没有115资源，也标记频道已初始化，避免未来第一条资源被误当历史跳过。
                     initialized[channel] = True
+                    logger.info("〖TG115自动转存〗频道 %s 当前页未发现115分享链接", channel)
                     continue
                 last_id = int(cursors.get(channel, 0) or 0)
                 if not initialized.get(channel) and not self._first_run_backfill:
@@ -319,7 +369,11 @@ class Tg115AutoTransfer(_PluginBase):
                     cursors[channel] = max(item.message_id for item in messages)
                     for item in messages:
                         hashes[f"{channel}:{item.message_id}"] = item.content_hash
-                    logger.info("〖TG115自动转存〗频道 %s 首次建立游标，不回补历史", channel)
+                    logger.info(
+                        "〖TG115自动转存〗频道 %s 首次建立游标，不回补历史。已记录当前最大消息ID=%s；如需测试当前页历史资源，请开启“首次回补当前页”或重置游标后再运行。",
+                        channel,
+                        cursors[channel],
+                    )
                     continue
                 initialized[channel] = True
 
@@ -327,12 +381,22 @@ class Tg115AutoTransfer(_PluginBase):
                     message_key = f"{channel}:{resource.message_id}"
                     changed = hashes.get(message_key) != resource.content_hash
                     if resource.message_id <= last_id and not changed:
+                        result["skipped"] += 1
+                        logger.debug("〖TG115自动转存〗频道 %s 消息 %s 已在游标内且内容未变化，跳过", channel, resource.message_id)
                         continue
                     result["new_messages"] += 1
                     match = matcher.match(resource, subscriptions)
                     if not match.subscription or match.score < self._minimum_score:
                         hashes[message_key] = resource.content_hash
                         result["skipped"] += 1
+                        logger.info(
+                            "〖TG115自动转存〗未匹配订阅：频道=%s，消息ID=%s，标题=%s，最高分=%s，最低要求=%s",
+                            channel,
+                            resource.message_id,
+                            resource.title,
+                            match.score,
+                            self._minimum_score,
+                        )
                         continue
                     result["matched"] += 1
                     logger.info("〖TG115自动转存〗匹配：%s -> %s，分数=%s", resource.title, match.subscription.name, match.score)
@@ -343,11 +407,13 @@ class Tg115AutoTransfer(_PluginBase):
                         completed_count = result["transferred"] + result["previewed"]
                         if completed_count >= self._max_transfers_per_run:
                             message_complete = False
+                            logger.warning("〖TG115自动转存〗达到单轮最多转存数量 %s，本条及后续分享留待下一轮处理", self._max_transfers_per_run)
                             break
                         # 同一分享链接在消息被编辑或重新发布后允许再次处理，支持频道更新同一资源。
                         processed_key = f"{share.key}|{resource.content_hash}"
                         if processed_key in processed:
                             result["skipped"] += 1
+                            logger.info("〖TG115自动转存〗分享已处理过，跳过：%s", share.url)
                             continue
                         if self._dry_run:
                             logger.info("〖TG115自动转存〗演练：将转存 %s 到 %s", share.url, self._target_pan_path())
@@ -372,6 +438,7 @@ class Tg115AutoTransfer(_PluginBase):
                             }
                             result["transferred"] += 1
                             successful_transfer = True
+                            logger.info("〖TG115自动转存〗转存成功：%s -> %s，结果=%s", share.url, self._target_pan_path(), transfer.message)
                             self._notify_transfer_result(
                                 success=True,
                                 resource=resource,
@@ -418,6 +485,7 @@ class Tg115AutoTransfer(_PluginBase):
                 "bridge_notified": bridge_notified,
             }
             self._save_state(state)
+            self._log_scan_summary(result, source, bridge_notified)
             self._notify_scan_result(result, source, bridge_notified)
             return result
         finally:
@@ -446,17 +514,22 @@ class Tg115AutoTransfer(_PluginBase):
         }
 
     async def _api_scan_now(self) -> dict:
+        logger.info("〖TG115自动转存〗收到手动立即运行请求")
         try:
-            return {"code": 0, "message": "扫描完成", "data": self.scan_once(source="API")}
+            result = self.scan_once(source="手动运行")
+            return {"code": 0, "message": "扫描完成，请查看插件日志和最近一次运行", "data": result}
         except Exception as err:
+            logger.error("〖TG115自动转存〗手动运行失败: %s", err, exc_info=True)
             return {"code": 1, "message": str(err), "data": None}
 
     async def _api_status(self) -> dict:
+        logger.debug("〖TG115自动转存〗收到状态查询请求")
         return {"code": 0, "message": "success", "data": self._status()}
 
     async def _api_reset(self) -> dict:
+        logger.warning("〖TG115自动转存〗收到手动重置游标与去重记录请求")
         self._save_state({})
-        return {"code": 0, "message": "状态已重置", "data": None}
+        return {"code": 0, "message": "状态已重置，下次扫描会重新建立频道游标", "data": None}
 
     def stop_service(self):
         pass
@@ -465,7 +538,7 @@ class Tg115AutoTransfer(_PluginBase):
         return [{
             "component": "VForm",
             "content": [
-                {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "v0.2.0：新增详情页立即运行按钮和MoviePilot通知；继续支持公开TG频道增量扫描、独立115转存及整理桥接。"}},
+                {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "v0.2.1：修复详情页按钮鉴权，改用登录态 Bearer 鉴权；增强中文运行日志、频道读取日志和匹配失败说明。"}},
                 {"component": "VRow", "content": [
                     {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}]},
                     {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "dry_run", "label": "仅日志演练"}}]},
@@ -500,7 +573,7 @@ class Tg115AutoTransfer(_PluginBase):
                     {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_transfer_success", "label": "转存成功时通知"}}]},
                     {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_transfer_failure", "label": "转存失败时通知"}}]},
                 ]},
-                {"component": "VAlert", "props": {"type": "warning", "variant": "tonal", "text": "目标路径需包含 CloudDrive2 前缀。例：前缀 /115open，目标 /115open/最近接收/TG，实际115接收目录会自动换算为 /最近接收/TG。立即运行按钮位于插件详情页，也可使用远程命令 /tg115_scan。"}},
+                {"component": "VAlert", "props": {"type": "warning", "variant": "tonal", "text": "目标路径需包含 CloudDrive2 前缀。例：前缀 /115open，目标 /115open/最近接收/TG，实际115接收目录会自动换算为 /最近接收/TG。默认首次运行只建立游标不回补历史；需要测试当前页历史资源时，请先开启“首次回补当前页”。"}},
             ],
         }], {
             "enabled": False,
@@ -545,7 +618,7 @@ class Tg115AutoTransfer(_PluginBase):
             last_result_text = "暂无运行记录"
 
         return [
-            {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "TG115自动转存 v0.2.0：可在这里立即运行；支持扫描汇总、匹配、转存成功和失败通知。"}},
+            {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "TG115自动转存 v0.2.1：点击“立即运行”后会在插件日志写入扫描开始、频道读取、匹配结果和扫描结束。默认首次只建立游标，不回补历史；测试历史资源请开启“首次回补当前页”或重置游标后再运行。"}},
             {"component": "VRow", "props": {"class": "my-2"}, "content": [
                 {
                     "component": "VCol",
@@ -557,7 +630,6 @@ class Tg115AutoTransfer(_PluginBase):
                             "click": {
                                 "api": "plugin/Tg115AutoTransfer/scan_now",
                                 "method": "post",
-                                "params": {"apikey": settings.API_TOKEN},
                             }
                         },
                     }],
@@ -572,7 +644,6 @@ class Tg115AutoTransfer(_PluginBase):
                             "click": {
                                 "api": "plugin/Tg115AutoTransfer/reset",
                                 "method": "post",
-                                "params": {"apikey": settings.API_TOKEN},
                             }
                         },
                     }],
