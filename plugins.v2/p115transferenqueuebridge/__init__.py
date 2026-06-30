@@ -33,9 +33,9 @@ class P115TransferEnqueueBridge(_PluginBase):
     """
 
     plugin_name = "115整理入队桥接"
-    plugin_desc = "轮询115下载历史，分享转存成功后自动入队配置目录"
+    plugin_desc = "轮询115下载历史，并桥接P115StrmHelper与TG自动转存到原生整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.3.0"
+    plugin_version = "0.4.0"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "p115transferenqueuebridge_"
@@ -48,19 +48,25 @@ class P115TransferEnqueueBridge(_PluginBase):
     DEFAULT_HISTORY_LIMIT = 500
     DEFAULT_SHARE_TRANSFER_DELAY = 30
     DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS = ["/最近接收"]
+    DEFAULT_TG_TRANSFER_DELAY = 30
+    DEFAULT_TG_TRANSFER_ENQUEUE_ROOTS = ["/最近接收/TG"]
     DEFAULT_RECENT_EVENTS_LIMIT = 50
     RUNTIME_STATE_KEY = "runtime_state"
     RECENT_EVENTS_KEY = "recent_events"
     STATUS_TEXT_MAP = {
         "ENQUEUE": "✅ 已入队",
         "SHARE-ENQUEUE": "✅ 已入队",
+        "TG-ENQUEUE": "✅ TG已入队",
         "DRYRUN": "🧪 演练",
         "DONE": "✅ 已完成",
         "SHARE-DONE": "✅ 已完成",
+        "TG-DONE": "✅ TG已完成",
         "SKIP": "⚠️ 已跳过",
         "SHARE-SKIP": "⚠️ 已跳过",
+        "TG-SKIP": "⚠️ TG已跳过",
         "ERROR": "❌ 错误",
         "SHARE-ERROR": "❌ 错误",
+        "TG-ERROR": "❌ TG错误",
         "INFO": "ℹ️ 信息",
         "CURSOR": "🔰 游标",
         "MANUAL": "🖱️ 手动",
@@ -82,6 +88,10 @@ class P115TransferEnqueueBridge(_PluginBase):
     _share_transfer_delay: int = DEFAULT_SHARE_TRANSFER_DELAY
     _share_transfer_enqueue_roots_text: str = ""
     _share_transfer_enqueue_roots: List[Path] = []
+    _tg_transfer_bridge_enabled: bool = False
+    _tg_transfer_delay: int = DEFAULT_TG_TRANSFER_DELAY
+    _tg_transfer_enqueue_roots_text: str = ""
+    _tg_transfer_enqueue_roots: List[Path] = []
     _share_roots_schedule_enabled: bool = False
     _share_roots_schedule_cron: str = ""
     _recent_events_limit: int = DEFAULT_RECENT_EVENTS_LIMIT
@@ -126,6 +136,16 @@ class P115TransferEnqueueBridge(_PluginBase):
             or "\n".join(self.DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS)
         ).strip()
         self._share_transfer_enqueue_roots = self._parse_allowed_roots(self._share_transfer_enqueue_roots_text)
+        self._tg_transfer_bridge_enabled = bool(config.get("tg_transfer_bridge_enabled", False))
+        self._tg_transfer_delay = max(
+            self._safe_int(config.get("tg_transfer_delay"), self.DEFAULT_TG_TRANSFER_DELAY),
+            0,
+        )
+        self._tg_transfer_enqueue_roots_text = str(
+            config.get("tg_transfer_enqueue_roots")
+            or "\n".join(self.DEFAULT_TG_TRANSFER_ENQUEUE_ROOTS)
+        ).strip()
+        self._tg_transfer_enqueue_roots = self._parse_allowed_roots(self._tg_transfer_enqueue_roots_text)
         self._share_roots_schedule_enabled = bool(config.get("share_roots_schedule_enabled", False))
         self._share_roots_schedule_cron = str(config.get("share_roots_schedule_cron") or "").strip()
         self._recent_events_limit = max(
@@ -147,6 +167,9 @@ class P115TransferEnqueueBridge(_PluginBase):
                 "share_transfer_hook_enabled": self._share_transfer_hook_enabled,
                 "share_transfer_delay": self._share_transfer_delay,
                 "share_transfer_enqueue_roots": self._share_transfer_enqueue_roots_text,
+                "tg_transfer_bridge_enabled": self._tg_transfer_bridge_enabled,
+                "tg_transfer_delay": self._tg_transfer_delay,
+                "tg_transfer_enqueue_roots": self._tg_transfer_enqueue_roots_text,
                 "share_roots_schedule_enabled": self._share_roots_schedule_enabled,
                 "share_roots_schedule_cron": self._share_roots_schedule_cron,
                 "recent_events_limit": self._recent_events_limit,
@@ -156,13 +179,14 @@ class P115TransferEnqueueBridge(_PluginBase):
         self._ensure_share_transfer_hook()
 
         logger.info(
-            "【115整理桥接】插件初始化完成 enabled=%s cron=%s interval=%s source_username=%s dry_run=%s share_transfer_hook=%s",
+            "【115整理桥接】插件初始化完成 enabled=%s cron=%s interval=%s source_username=%s dry_run=%s share_transfer_hook=%s tg_bridge=%s",
             self._enabled,
             self._cron or "<interval>",
             self._interval,
             self._source_username,
             self._dry_run,
             self._share_transfer_hook_enabled,
+            self._tg_transfer_bridge_enabled,
         )
 
     def get_state(self) -> bool:
@@ -298,7 +322,7 @@ class P115TransferEnqueueBridge(_PluginBase):
                             "variant": "tonal",
                             "density": "compact",
                             "class": "mb-2",
-                            "text": "v0.3.0：分享转存成功后直接将配置目录加入 MP 原生整理队列；支持立即运行、定时补漏、中文状态和可读时间。",
+                            "text": "v0.4.0：保留P115StrmHelper分享转存联动，并新增独立TG自动转存联动入口。",
                         },
                     },
                     {
@@ -417,6 +441,51 @@ class P115TransferEnqueueBridge(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VAlert",
+                        "props": {
+                            "type": "info",
+                            "variant": "tonal",
+                            "density": "compact",
+                            "class": "mt-2 mb-2",
+                            "text": "TG自动转存联动：TG插件只发送转存成功信号；桥接插件按下方固定目录加入 MoviePilot 原生整理队列。",
+                        },
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{"component": "VSwitch", "props": {"model": "tg_transfer_bridge_enabled", "label": "启用TG自动转存联动"}}],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{"component": "VTextField", "props": {"model": "tg_transfer_delay", "label": "TG转存成功后延迟入队（秒）", "type": "number"}}],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "tg_transfer_enqueue_roots",
+                                            "label": "TG转存成功后自动入队目录",
+                                            "rows": 3,
+                                            "placeholder": "/最近接收/TG\n填写115内部路径，不含CloudDrive2前缀",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
                         "component": "VRow",
                         "content": [
                             {
@@ -456,6 +525,9 @@ class P115TransferEnqueueBridge(_PluginBase):
             "share_transfer_hook_enabled": False,
             "share_transfer_delay": self.DEFAULT_SHARE_TRANSFER_DELAY,
             "share_transfer_enqueue_roots": "\n".join(self.DEFAULT_SHARE_TRANSFER_ENQUEUE_ROOTS),
+            "tg_transfer_bridge_enabled": False,
+            "tg_transfer_delay": self.DEFAULT_TG_TRANSFER_DELAY,
+            "tg_transfer_enqueue_roots": "\n".join(self.DEFAULT_TG_TRANSFER_ENQUEUE_ROOTS),
             "share_roots_schedule_enabled": False,
             "share_roots_schedule_cron": "",
             "recent_events_limit": self.DEFAULT_RECENT_EVENTS_LIMIT,
@@ -481,10 +553,12 @@ class P115TransferEnqueueBridge(_PluginBase):
         summary_items = [
             f"运行状态：{'✅ 已启用' if self._enabled else '⏸️ 未启用'}",
             f"分享转存桥接：{'✅ 已启用' if self._share_transfer_hook_enabled else '⏸️ 未启用'}",
+            f"TG自动转存桥接：{'✅ 已启用' if self._tg_transfer_bridge_enabled else '⏸️ 未启用'}",
             f"来源用户：{self._source_username}",
             f"轮询方式：{self._cron or f'每 {self._interval} 秒'}",
             f"允许根目录：{len(self._allowed_roots)} 个（留空表示不过滤）",
             f"分享自动入队目录：{len(self._share_transfer_enqueue_roots)} 个",
+            f"TG自动入队目录：{len(self._tg_transfer_enqueue_roots)} 个",
             f"定时补漏：{'✅ 已启用 ' + self._share_roots_schedule_cron if self._share_roots_schedule_enabled and self._share_roots_schedule_cron else '⏸️ 未启用'}",
             f"去重冷却：{self._debounce_seconds} 秒",
         ]
@@ -492,6 +566,7 @@ class P115TransferEnqueueBridge(_PluginBase):
             f"轮询次数：{stats.get('poll_runs', 0)}",
             f"手动运行：{stats.get('manual_runs', 0)}",
             f"分享转存触发：{stats.get('share_hook_success', 0)}",
+            f"TG转存触发：{stats.get('tg_transfer_events', 0)}",
             f"定时补漏：{stats.get('scheduled_share_runs', 0)}",
             f"成功入队：{stats.get('enqueue_success', 0)}",
             f"跳过：{stats.get('enqueue_skip', 0)}",
@@ -522,7 +597,7 @@ class P115TransferEnqueueBridge(_PluginBase):
                     "variant": "tonal",
                     "density": "compact",
                     "class": "mb-2",
-                    "text": "115整理入队桥接 v0.3.0：分享转存成功后直接入队配置目录。API：POST /api/v1/plugin/P115TransferEnqueueBridge/poll_now、/enqueue_share_roots、/clear_cache、/reset_cursor。",
+                    "text": "115整理入队桥接 v0.4.0：保留P115StrmHelper联动，并新增TG自动转存独立联动配置。API：POST /api/v1/plugin/P115TransferEnqueueBridge/poll_now、/enqueue_share_roots、/clear_cache、/reset_cursor。",
                 },
             },
             {
@@ -604,8 +679,16 @@ class P115TransferEnqueueBridge(_PluginBase):
         if not event or not event.event_data:
             return
         action = event.event_data.get("action")
-        if action not in {"p115bridge_poll", "p115bridge_share", "p115bridge_status", "p115bridge_clear_cache"}:
+        if action not in {"p115bridge_poll", "p115bridge_share", "p115bridge_tg_transfer_success", "p115bridge_status", "p115bridge_clear_cache"}:
             return
+        if action == "p115bridge_tg_transfer_success":
+            try:
+                source = str(event.event_data.get("source") or "Tg115AutoTransfer")
+                self.schedule_tg_transfer_roots(reason=f"{source}转存成功")
+            except Exception as err:
+                logger.error(f"【115整理桥接】TG联动调度失败: {err}", exc_info=True)
+            return
+
         channel = event.event_data.get("channel")
         userid = event.event_data.get("user")
         try:
@@ -661,6 +744,9 @@ class P115TransferEnqueueBridge(_PluginBase):
             "cron": self._cron,
             "share_transfer_hook_enabled": self._share_transfer_hook_enabled,
             "share_transfer_enqueue_roots": [str(path) for path in self._share_transfer_enqueue_roots],
+            "tg_transfer_bridge_enabled": self._tg_transfer_bridge_enabled,
+            "tg_transfer_delay": self._tg_transfer_delay,
+            "tg_transfer_enqueue_roots": [str(path) for path in self._tg_transfer_enqueue_roots],
             "share_roots_schedule_enabled": self._share_roots_schedule_enabled,
             "share_roots_schedule_cron": self._share_roots_schedule_cron,
             "stats": stats,
@@ -869,6 +955,104 @@ class P115TransferEnqueueBridge(_PluginBase):
         if delay:
             sleep(delay)
         self._enqueue_share_transfer_roots(reason=reason)
+
+    def schedule_tg_transfer_roots(self, reason: str = "TG自动转存成功") -> Dict[str, Any]:
+        """接收TG插件成功信号，按TG独立配置延迟入队。"""
+        if not self._enabled:
+            logger.info("【115整理桥接】收到TG成功信号，但桥接插件未启用")
+            return {"scheduled": False, "message": "桥接插件未启用"}
+        if not self._tg_transfer_bridge_enabled:
+            logger.info("【115整理桥接】收到TG成功信号，但TG联动未启用")
+            return {"scheduled": False, "message": "TG自动转存联动未启用"}
+
+        self._stats_increment("tg_transfer_events")
+        self._record_recent_event("INFO", "-", f"收到{reason}信号，{self._tg_transfer_delay}秒后入队TG配置目录")
+        worker = Thread(
+            target=self._delayed_enqueue_tg_transfer_roots,
+            args=(reason,),
+            name="P115TransferEnqueueBridge-TgRoots",
+            daemon=True,
+        )
+        worker.start()
+        return {"scheduled": True, "delay": self._tg_transfer_delay}
+
+    def _delayed_enqueue_tg_transfer_roots(self, reason: str) -> None:
+        delay = max(self._tg_transfer_delay, 0)
+        if delay:
+            sleep(delay)
+        self._enqueue_tg_transfer_roots(reason=reason)
+
+    def _get_tg_transfer_enqueue_roots(self) -> List[str]:
+        """获取TG转存成功后主动入队的固定目录。"""
+        roots: List[str] = []
+        configured_roots = self._tg_transfer_enqueue_roots or self._parse_allowed_roots(
+            "\n".join(self.DEFAULT_TG_TRANSFER_ENQUEUE_ROOTS)
+        )
+        for root in configured_roots:
+            normalized_root = self._normalize_path(root)
+            if normalized_root and normalized_root not in roots:
+                roots.append(normalized_root)
+        return roots
+
+    def _enqueue_tg_transfer_roots(self, reason: str) -> Dict[str, int]:
+        """将TG独立配置目录逐个加入MoviePilot原生整理队列。"""
+        if not self._runtime_lock.acquire(blocking=False):
+            self._record_recent_event("TG-SKIP", "-", f"{reason}：已有任务运行中，已跳过")
+            self._stats_increment("enqueue_skip")
+            return {"enqueued": 0, "skipped": 1, "errors": 0}
+
+        try:
+            runtime_state = self._load_runtime_state()
+            path_cache = runtime_state.get("path_cache") or {}
+            now_ts = int(time())
+            enqueued = 0
+            skipped = 0
+            errors = 0
+            roots = self._get_tg_transfer_enqueue_roots()
+
+            if not roots:
+                self._record_recent_event("TG-SKIP", "-", f"{reason}：未配置TG自动入队目录")
+                self._stats_increment("enqueue_skip")
+                return {"enqueued": 0, "skipped": 1, "errors": 0}
+
+            for root in roots:
+                normalized_path = self._normalize_path(root)
+                if not normalized_path:
+                    skipped += 1
+                    continue
+                if not self._is_path_allowed(Path(normalized_path)):
+                    skipped += 1
+                    self._record_recent_event("TG-SKIP", normalized_path, f"{reason}：路径不在允许根目录内")
+                    continue
+                if not self._should_process_path(normalized_path, path_cache, now_ts):
+                    skipped += 1
+                    self._record_recent_event("TG-SKIP", normalized_path, f"{reason}：仍处于去重冷却中")
+                    continue
+                if self._enqueue_path(normalized_path):
+                    enqueued += 1
+                    path_cache[normalized_path] = now_ts
+                    self._record_recent_event("TG-ENQUEUE", normalized_path, f"{reason}：已加入整理队列")
+                else:
+                    errors += 1
+                    self._record_recent_event("TG-ERROR", normalized_path, f"{reason}：加入整理队列失败")
+
+            runtime_state["path_cache"] = self._trim_path_cache(path_cache, now_ts)
+            stats = runtime_state.get("stats") or {}
+            stats["last_run_time"] = self._now_text()
+            stats["last_tg_enqueue_time"] = self._now_text()
+            stats["enqueue_success"] = self._safe_int(stats.get("enqueue_success"), 0) + enqueued
+            stats["enqueue_skip"] = self._safe_int(stats.get("enqueue_skip"), 0) + skipped
+            stats["enqueue_error"] = self._safe_int(stats.get("enqueue_error"), 0) + errors
+            runtime_state["stats"] = stats
+            self._save_runtime_state(runtime_state)
+            self._record_recent_event(
+                "TG-DONE",
+                "-",
+                f"{reason}完成：成功 {enqueued}，跳过 {skipped}，失败 {errors}",
+            )
+            return {"enqueued": enqueued, "skipped": skipped, "errors": errors}
+        finally:
+            self._runtime_lock.release()
 
     def enqueue_share_roots_scheduled(self):
         """
