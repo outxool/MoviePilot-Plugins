@@ -10,7 +10,7 @@ from app.core.event import eventmanager
 from app.db.subscribe_oper import SubscribeOper
 from app.log import logger
 from app.plugins import _PluginBase
-from app.schemas.types import EventType
+from app.schemas.types import EventType, NotificationType
 
 from .matcher import SubscriptionMatcher
 from .models import TelegramResource
@@ -23,7 +23,7 @@ class Tg115AutoTransfer(_PluginBase):
     plugin_name = "TG 115自动转存"
     plugin_desc = "增量扫描公开TG频道，匹配MoviePilot订阅并独立转存115资源"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "0.1.0"
+    plugin_version = "0.2.0"
     plugin_author = "outxool"
     author_url = "https://github.com/outxool"
     plugin_config_prefix = "tg115autotransfer_"
@@ -46,6 +46,12 @@ class Tg115AutoTransfer(_PluginBase):
     _request_timeout = 20
     _proxy = ""
     _bridge_enabled = True
+    _notify_enabled = False
+    _notify_scan_summary = True
+    _notify_empty_scan = False
+    _notify_match = False
+    _notify_transfer_success = True
+    _notify_transfer_failure = True
     _dry_run = False
     _run_lock = Lock()
 
@@ -64,6 +70,12 @@ class Tg115AutoTransfer(_PluginBase):
         self._request_timeout = max(5, int(config.get("request_timeout") or 20))
         self._proxy = str(config.get("proxy") or "").strip()
         self._bridge_enabled = bool(config.get("bridge_enabled", True))
+        self._notify_enabled = bool(config.get("notify_enabled", False))
+        self._notify_scan_summary = bool(config.get("notify_scan_summary", True))
+        self._notify_empty_scan = bool(config.get("notify_empty_scan", False))
+        self._notify_match = bool(config.get("notify_match", False))
+        self._notify_transfer_success = bool(config.get("notify_transfer_success", True))
+        self._notify_transfer_failure = bool(config.get("notify_transfer_failure", True))
         self._dry_run = bool(config.get("dry_run", False))
         self.update_config({
             "enabled": self._enabled,
@@ -79,6 +91,12 @@ class Tg115AutoTransfer(_PluginBase):
             "request_timeout": self._request_timeout,
             "proxy": self._proxy,
             "bridge_enabled": self._bridge_enabled,
+            "notify_enabled": self._notify_enabled,
+            "notify_scan_summary": self._notify_scan_summary,
+            "notify_empty_scan": self._notify_empty_scan,
+            "notify_match": self._notify_match,
+            "notify_transfer_success": self._notify_transfer_success,
+            "notify_transfer_failure": self._notify_transfer_failure,
             "dry_run": self._dry_run,
         })
         logger.info("〖TG115自动转存〗初始化完成 enabled=%s channels=%s", self._enabled, len(self._channels()))
@@ -168,6 +186,92 @@ class Tg115AutoTransfer(_PluginBase):
     def _target_pan_path(self) -> str:
         return cloud_path_to_pan_path(self._target_path, self._cloud_prefix)
 
+    def _send_notification(self, title: str, text: str) -> None:
+        """通过 MoviePilot 已配置的通知渠道发送插件消息。"""
+        if not self._notify_enabled:
+            return
+        try:
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=title,
+                text=text,
+            )
+        except Exception as err:
+            logger.error("〖TG115自动转存〗发送通知失败: %s", err, exc_info=True)
+
+    @staticmethod
+    def _format_scan_result(result: Dict[str, int], source: str, bridge_notified: bool = False) -> str:
+        return (
+            f"触发方式：{source}\n"
+            f"新消息：{result.get('new_messages', 0)}\n"
+            f"匹配订阅：{result.get('matched', 0)}\n"
+            f"成功转存：{result.get('transferred', 0)}\n"
+            f"演练预览：{result.get('previewed', 0)}\n"
+            f"跳过：{result.get('skipped', 0)}\n"
+            f"失败：{result.get('errors', 0)}\n"
+            f"整理桥接：{'已通知' if bridge_notified else '未触发'}"
+        )
+
+    def _notify_scan_result(self, result: Dict[str, int], source: str, bridge_notified: bool) -> None:
+        if not self._notify_enabled or not self._notify_scan_summary:
+            return
+        has_activity = any(
+            int(result.get(key, 0) or 0) > 0
+            for key in ("new_messages", "matched", "transferred", "previewed", "errors")
+        )
+        if not has_activity and not self._notify_empty_scan:
+            return
+        if result.get("errors", 0):
+            title = "TG115自动转存：扫描完成（有失败）"
+        elif result.get("transferred", 0):
+            title = "TG115自动转存：扫描并转存完成"
+        else:
+            title = "TG115自动转存：扫描完成"
+        self._send_notification(title, self._format_scan_result(result, source, bridge_notified))
+
+    def _notify_match_result(self, resource: TelegramResource, subscription: Any, score: int) -> None:
+        if not self._notify_enabled or not self._notify_match:
+            return
+        self._send_notification(
+            "TG115自动转存：匹配到订阅资源",
+            (
+                f"订阅：{subscription.name}\n"
+                f"TG标题：{resource.title}\n"
+                f"频道：@{resource.channel}\n"
+                f"消息ID：{resource.message_id}\n"
+                f"匹配分数：{score}\n"
+                f"115链接数：{len(resource.links)}"
+            ),
+        )
+
+    def _notify_transfer_result(
+        self,
+        *,
+        success: bool,
+        resource: TelegramResource,
+        subscription: Any,
+        share_url: str,
+        message: str,
+    ) -> None:
+        if not self._notify_enabled:
+            return
+        if success and not self._notify_transfer_success:
+            return
+        if not success and not self._notify_transfer_failure:
+            return
+        self._send_notification(
+            "TG115自动转存：转存成功" if success else "TG115自动转存：转存失败",
+            (
+                f"订阅：{subscription.name}\n"
+                f"TG标题：{resource.title}\n"
+                f"频道：@{resource.channel}\n"
+                f"消息ID：{resource.message_id}\n"
+                f"目标目录：{self._target_pan_path()}\n"
+                f"分享链接：{share_url}\n"
+                f"结果：{message}"
+            ),
+        )
+
     def scan_once(self, source: str = "定时任务") -> Dict[str, int]:
         result = {"new_messages": 0, "matched": 0, "transferred": 0, "previewed": 0, "skipped": 0, "errors": 0}
         if not self._run_lock.acquire(blocking=False):
@@ -231,6 +335,7 @@ class Tg115AutoTransfer(_PluginBase):
                         continue
                     result["matched"] += 1
                     logger.info("〖TG115自动转存〗匹配：%s -> %s，分数=%s", resource.title, match.subscription.name, match.score)
+                    self._notify_match_result(resource, match.subscription, match.score)
 
                     message_complete = True
                     for share in resource.links:
@@ -266,10 +371,24 @@ class Tg115AutoTransfer(_PluginBase):
                             }
                             result["transferred"] += 1
                             successful_transfer = True
+                            self._notify_transfer_result(
+                                success=True,
+                                resource=resource,
+                                subscription=match.subscription,
+                                share_url=share.url,
+                                message=transfer.message or "115分享资源已转存",
+                            )
                         except Exception as err:
                             message_complete = False
                             logger.error("〖TG115自动转存〗转存失败 %s: %s", share.url, err, exc_info=True)
                             result["errors"] += 1
+                            self._notify_transfer_result(
+                                success=False,
+                                resource=resource,
+                                subscription=match.subscription,
+                                share_url=share.url,
+                                message=str(err),
+                            )
                     # 失败、演练或因单轮上限未处理完的消息不写入哈希，下一轮继续处理。
                     if message_complete:
                         hashes[message_key] = resource.content_hash
@@ -284,11 +403,21 @@ class Tg115AutoTransfer(_PluginBase):
             stats["transferred"] = int(stats.get("transferred", 0)) + result["transferred"]
             stats["previewed"] = int(stats.get("previewed", 0)) + result["previewed"]
             stats["errors"] = int(stats.get("errors", 0)) + result["errors"]
-            self._save_state(state)
 
+            bridge_notified = False
             if successful_transfer and self._bridge_enabled:
                 eventmanager.send_event(EventType.PluginAction, {"action": self.EVENT_ACTION, "source": "Tg115AutoTransfer"})
+                bridge_notified = True
                 logger.info("〖TG115自动转存〗已通知115整理入队桥接")
+
+            state["last_result"] = {
+                **result,
+                "source": source,
+                "time": stats["last_run"],
+                "bridge_notified": bridge_notified,
+            }
+            self._save_state(state)
+            self._notify_scan_result(result, source, bridge_notified)
             return result
         finally:
             if tg_client:
@@ -307,6 +436,7 @@ class Tg115AutoTransfer(_PluginBase):
             "target_pan_path": self._target_pan_path(),
             "minimum_score": self._minimum_score,
             "bridge_enabled": self._bridge_enabled,
+            "notify_enabled": self._notify_enabled,
             "processed_shares": len(state.get("processed_shares") or {}),
             "last_run": stats.get("last_run") or "-",
             "transferred": stats.get("transferred", 0),
@@ -334,7 +464,7 @@ class Tg115AutoTransfer(_PluginBase):
         return [{
             "component": "VForm",
             "content": [
-                {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "v0.1.0：扫描公开TG频道的新消息，匹配MP订阅后直接转存115；转存成功仅向桥接插件发送专用成功事件。"}},
+                {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "v0.2.0：新增详情页立即运行按钮和MoviePilot通知；继续支持公开TG频道增量扫描、独立115转存及整理桥接。"}},
                 {"component": "VRow", "content": [
                     {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}]},
                     {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "dry_run", "label": "仅日志演练"}}]},
@@ -357,7 +487,19 @@ class Tg115AutoTransfer(_PluginBase):
                     {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [{"component": "VTextField", "props": {"model": "cron", "label": "扫描 Cron", "placeholder": "*/15 * * * *"}}]},
                     {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [{"component": "VTextField", "props": {"model": "proxy", "label": "TG代理（可选）", "placeholder": "http://127.0.0.1:7890"}}]},
                 ]},
-                {"component": "VAlert", "props": {"type": "warning", "variant": "tonal", "text": "目标路径需包含 CloudDrive2 前缀。例：前缀 /115open，目标 /115open/最近接收/TG，实际115接收目录会自动换算为 /最近接收/TG。"}},
+                {"component": "VDivider", "props": {"class": "my-3"}},
+                {"component": "VAlert", "props": {"type": "success", "variant": "tonal", "class": "mb-2", "text": "通知使用MoviePilot现有的消息推送渠道。建议开启转存成功、失败和扫描汇总；匹配通知可能较多，默认关闭。"}},
+                {"component": "VRow", "content": [
+                    {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_enabled", "label": "发送MoviePilot通知"}}]},
+                    {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_scan_summary", "label": "发送扫描汇总"}}]},
+                    {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_empty_scan", "label": "无结果也通知"}}]},
+                ]},
+                {"component": "VRow", "content": [
+                    {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_match", "label": "匹配到订阅时通知"}}]},
+                    {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_transfer_success", "label": "转存成功时通知"}}]},
+                    {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VSwitch", "props": {"model": "notify_transfer_failure", "label": "转存失败时通知"}}]},
+                ]},
+                {"component": "VAlert", "props": {"type": "warning", "variant": "tonal", "text": "目标路径需包含 CloudDrive2 前缀。例：前缀 /115open，目标 /115open/最近接收/TG，实际115接收目录会自动换算为 /最近接收/TG。立即运行按钮位于插件详情页，也可使用远程命令 /tg115_scan。"}},
             ],
         }], {
             "enabled": False,
@@ -373,15 +515,72 @@ class Tg115AutoTransfer(_PluginBase):
             "request_timeout": 20,
             "proxy": "",
             "bridge_enabled": True,
+            "notify_enabled": False,
+            "notify_scan_summary": True,
+            "notify_empty_scan": False,
+            "notify_match": False,
+            "notify_transfer_success": True,
+            "notify_transfer_failure": True,
             "dry_run": False,
         }
 
     def get_page(self) -> Optional[List[dict]]:
         status = self._status()
+        state = self._load_state()
+        last_result = state.get("last_result") or {}
+        if last_result:
+            last_result_text = (
+                f"时间：{last_result.get('time', '-')} ｜ "
+                f"方式：{last_result.get('source', '-')} ｜ "
+                f"新消息：{last_result.get('new_messages', 0)} ｜ "
+                f"匹配：{last_result.get('matched', 0)} ｜ "
+                f"转存：{last_result.get('transferred', 0)} ｜ "
+                f"演练：{last_result.get('previewed', 0)} ｜ "
+                f"跳过：{last_result.get('skipped', 0)} ｜ "
+                f"失败：{last_result.get('errors', 0)} ｜ "
+                f"桥接：{'已通知' if last_result.get('bridge_notified') else '未触发'}"
+            )
+        else:
+            last_result_text = "暂无运行记录"
+
         return [
-            {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "TG115自动转存 v0.1.0：公开频道增量扫描、订阅匹配、独立115转存、专用桥接事件。"}},
-            {"component": "VCard", "props": {"variant": "outlined"}, "content": [
+            {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "TG115自动转存 v0.2.0：可在这里立即运行；支持扫描汇总、匹配、转存成功和失败通知。"}},
+            {"component": "VRow", "props": {"class": "my-2"}, "content": [
+                {
+                    "component": "VCol",
+                    "props": {"cols": 12, "md": 3},
+                    "content": [{
+                        "component": "VBtn",
+                        "props": {"color": "primary", "block": True, "prepend-icon": "mdi-play", "text": "立即运行"},
+                        "events": {
+                            "click": {
+                                "api": "plugin/Tg115AutoTransfer/scan_now",
+                                "method": "post",
+                            }
+                        },
+                    }],
+                },
+                {
+                    "component": "VCol",
+                    "props": {"cols": 12, "md": 3},
+                    "content": [{
+                        "component": "VBtn",
+                        "props": {"color": "warning", "variant": "tonal", "block": True, "prepend-icon": "mdi-backup-restore", "text": "重置游标与去重"},
+                        "events": {
+                            "click": {
+                                "api": "plugin/Tg115AutoTransfer/reset",
+                                "method": "post",
+                            }
+                        },
+                    }],
+                },
+            ]},
+            {"component": "VCard", "props": {"variant": "outlined", "class": "mb-2"}, "content": [
                 {"component": "VCardTitle", "text": "运行状态"},
                 {"component": "VCardText", "text": " ｜ ".join(f"{key}: {value}" for key, value in status.items())},
+            ]},
+            {"component": "VCard", "props": {"variant": "outlined"}, "content": [
+                {"component": "VCardTitle", "text": "最近一次运行"},
+                {"component": "VCardText", "text": last_result_text},
             ]},
         ]
