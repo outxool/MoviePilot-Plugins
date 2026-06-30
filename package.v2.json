@@ -32,19 +32,32 @@
   },
   "P115TransferEnqueueBridge": {
     "name": "115整理入队桥接",
-    "description": "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列，支持 CloudDrive2 路径映射、去重冷却、白名单目录过滤。",
+    "description": "轮询 P115StrgmSub 下载历史并直接加入 MoviePilot 原生整理队列；保留 P115StrmHelper 分享转存联动，新增独立 TG 自动转存联动，支持 CloudDrive2 路径映射。",
     "labels": "整理,115,转存,桥接",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "outxool",
     "level": 1,
     "history": {
+      "v0.4.0": "保留 P115StrmHelper 分享转存联动，新增 TG115AutoTransfer 独立成功事件、延迟和固定入队目录配置。",
       "v0.3.0": "分享转存成功后不再解析具体文件 / 目录，直接把 “分享转存成功后自动入队目录” 中的目录交给 MP 原生整理队列。",
       "v0.2.4": "桥接插件配置页新增「分享转存候选兜底根目录」，默认 /最近接收。以后你可以在桥接插件里自己填多个兜底目录，原候选路径解析失败时会用“分享顶层项目名”依次拼接这些根目录自动尝试入队。",
       "v0.2.2": "分享转存成功后优先读取分享链接顶层项目名，构造 parent_path/item_name 候选路径入队；候选解析失败时才降级到旧的一层目录快照差集。不做常驻目录扫描。",
       "v0.2.1": "修复115网盘STRM助手分享转存到原生整理队列。",
       "v0.2.0": "轮询115下载历史，并可按需桥接115网盘STRM助手分享转存到原生整理队列。",
       "v0.1.0": "初始版本：轮询 DownloadHistory 按来源用户名匹配，去重后调用 TransferChain 入队整理。"
+    }
+  },
+  "Tg115AutoTransfer": {
+    "name": "TG 115自动转存",
+    "description": "增量扫描公开TG频道，匹配MoviePilot订阅，独立转存115资源，并联动115整理入队桥接。",
+    "labels": "TG,115,转存,订阅,桥接",
+    "version": "0.1.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
+    "author": "outxool",
+    "level": 1,
+    "history": {
+      "v0.1.0": "首版：公开TG频道增量扫描、115链接与Telegraph解析、MP订阅匹配、CloudDrive2路径换算、独立115转存和桥接联动。"
     }
   },
   "JuyingSignin": {
