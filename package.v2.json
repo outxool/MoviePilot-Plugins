@@ -48,7 +48,7 @@
       "v0.1.0": "初始版本：轮询 DownloadHistory 按来源用户名匹配，去重后调用 TransferChain 入队整理。"
     }
   },
-  "Tg115AutoTransfer": {
+  "tg115autotransfer": {
     "name": "TG 115自动转存",
     "description": "增量扫描公开TG频道，匹配MoviePilot订阅，独立转存115资源，并联动115整理入队桥接。",
     "labels": "TG,115,转存,订阅,桥接",
